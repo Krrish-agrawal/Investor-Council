@@ -19,19 +19,20 @@ from council import config
 from council.cli.common import cli_errors, echo_err, format_table, parse_iso_date
 from council.db.engine import make_engine, transaction
 from council.edgar.client import EdgarClient, read_cached_document
+from council import stages
 from council.edgar.facts import CompanyFactsSnapshot, identify_fiscal_periods
 from council.edgar.manifest import write_manifest
 from council.edgar.models import normalize_cik
 from council.edgar.validate import parse_submissions
 from council.errors import CouncilError, NotFoundError
 from council.evidence.freshness import load_freshness_config
-from council.evidence.service import rule_claim
+from council.evidence.service import register_snapshot_source, rule_claim
 from council.portfolio.csv_ingest import parse_portfolio_csv_file
 from council.portfolio.metrics import compute_metrics
 from council.portfolio.repository import latest_portfolio_id, load_holdings, load_portfolio, save_portfolio
 from council.portfolio.summary import build_local_summary, build_shared_summary
 from council.report.lint import lint_advice_language
-from council.report.model import load_dossier_data
+from council.report.model import load_dossier_data, load_ledger
 from council.report.render import TEMPLATE_VERSION, render_dossier
 from council.sessions import create_session, get_session, latest_session
 
@@ -40,6 +41,8 @@ log = logging.getLogger(__name__)
 human_app = typer.Typer(help="Local, human-run commands (portfolio, sessions, rulings, dossier).", no_args_is_help=True)
 session_app = typer.Typer(help="Research sessions.", no_args_is_help=True)
 data_app = typer.Typer(help="Frozen SEC EDGAR data.", no_args_is_help=True)
+agents_app = typer.Typer(help="Agent working directories.", no_args_is_help=True)
+human_app.add_typer(agents_app, name="agents")
 human_app.add_typer(session_app, name="session")
 human_app.add_typer(data_app, name="data")
 
@@ -159,6 +162,15 @@ def session_new(
             target_cik=normalize_cik(cik) if cik else None, target_sector=target_sector or shared.get("target_sector"),
         )
     typer.echo(f"Created session {session.code} (target {session.target_ticker}, stage {session.stage}).")
+    if cik:
+        cached = read_cached_document(config.edgar_dir(), normalize_cik(cik), "companyfacts")
+        if cached is None:
+            typer.echo(f"Note: no frozen snapshot cached for CIK{normalize_cik(cik)}. Run `council human data fetch --cik {int(normalize_cik(cik))}` "
+                       "then `council human data register --cik ...` so the agents can cite it.")
+        else:
+            with transaction(engine) as conn:
+                register_snapshot_source(conn, CompanyFactsSnapshot(cached))
+            typer.echo(f"Registered the cached snapshot for CIK{normalize_cik(cik)} as a citable source.")
     typer.echo("Sanitised summary (safe to paste into a shared room; contains no shares, values or other tickers):")
     typer.echo(json.dumps(shared, indent=2))
 
@@ -199,6 +211,74 @@ def rule(
     with transaction(engine) as conn:
         claim = rule_claim(conn, get_session(conn, session_code), claim_code, ruling, note)  # type: ignore[arg-type]
     typer.echo(f"{claim.code}: ruling recorded as {claim.human_ruling}")
+
+
+@human_app.command("status")
+@cli_errors
+def status(session: Annotated[Optional[str], typer.Argument(help="Session code (default: latest).")] = None) -> None:
+    """Where a session stands: submissions, claims, challenges, unresolved flagged claims and the next step."""
+    engine = make_engine("human")
+    with engine.connect() as conn:
+        sess = get_session(conn, session) if session else latest_session(conn)
+        if sess is None:
+            raise NotFoundError("No sessions yet.")
+        st = stages.compute_status(sess, load_ledger(conn, sess.id))
+    typer.echo(f"{sess.code}  target {sess.target_ticker}  stage {sess.stage} ({stages.STAGE_NAMES[sess.stage]})  status {sess.status}")
+    rows = [[f"stage {n}", "yes" if st.submitted[n]["bull"] else "-", "yes" if st.submitted[n]["bear"] else "-"] for n in (1, 2, 3)]
+    typer.echo(format_table(["submitted", "bull", "bear"], rows))
+    typer.echo(f"claims: bull {st.claims_by_agent['bull']}, bear {st.claims_by_agent['bear']}   "
+               f"challenges made: bull {st.challenges_by_agent['bull']}, bear {st.challenges_by_agent['bear']}")
+    typer.echo(f"flagged claims: {len(st.flagged)}   unresolved (need an accept/reject ruling): {len(st.unresolved)}")
+    for u in st.unresolved:
+        typer.echo(f"  {u.claim.code} [{u.claim.agent}, {u.claim.claim_type}] {u.claim.text[:90]}")
+        typer.echo(f"      why: {'; '.join(u.reasons)}")
+    typer.echo(f"next: {st.next_step}")
+
+
+@human_app.command("advance")
+@cli_errors
+def advance(
+    session: Annotated[str, typer.Argument(help="Session code.")],
+    to: Annotated[int, typer.Option("--to", help="Next stage: 2 or 3.")],
+    force: Annotated[bool, typer.Option("--force", help="Advance even if an agent has not submitted (needed for the sequential fallback or a failed agent).")] = False,
+) -> None:
+    """Move a session to the next stage (human-only). Normally both agents must have submitted the current stage."""
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        sess = get_session(conn, session)
+        stages.advance(conn, sess, load_ledger(conn, sess.id), to, force=force)
+    typer.echo(f"{session} is now at stage {to} ({stages.STAGE_NAMES[to]}). Post the stage message tagging both agents.")
+
+
+@human_app.command("finalize")
+@cli_errors
+def finalize(
+    session: Annotated[str, typer.Argument(help="Session code.")],
+    note: Annotated[str, typer.Option("--note", help="Your own decision note, in your own words.")],
+    output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Also write the final dossier to a file.")] = None,
+    force_missing_final: Annotated[bool, typer.Option("--force-missing-final", help="Finalize although an agent filed no final position (the dossier says so).")] = False,
+) -> None:
+    """Finalize at stage 3: every flagged claim needs an accept/reject ruling (no override), then store the FINAL dossier."""
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        sess = get_session(conn, session)
+        ledger = load_ledger(conn, sess.id)
+        stages.finalize_checks(sess, ledger, note, force_submissions=force_missing_final)
+        data = load_dossier_data(conn, portfolio_id=sess.portfolio_id, session=sess, human_note=note)
+        markdown = render_dossier(data, generated_at=stages.now_utc(), final=True)
+        version = conn.execute(text("SELECT COALESCE(MAX(version), 0) + 1 FROM dossiers WHERE session_id = :s"), {"s": sess.id}).scalar_one()
+        conn.execute(
+            text("INSERT INTO dossiers (session_id, version, body_markdown, template_ver, human_note, status) VALUES (:s, :v, :b, :t, :n, 'FINAL')"),
+            {"s": sess.id, "v": int(version), "b": markdown, "t": TEMPLATE_VERSION, "n": note.strip()},
+        )
+        stages.mark_finalized(conn, sess)
+    for f in lint_advice_language(markdown):
+        echo_err(f"lint ({f.rule}): {f.excerpt!r}")
+    typer.echo(f"{session} finalized; FINAL dossier version {int(version)} stored.")
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown, encoding="utf-8")
+        typer.echo(f"Wrote {output}")
 
 
 @human_app.command("report")
@@ -297,6 +377,20 @@ def data_fetch(
     typer.echo(f"Manifest updated: {manifest}")
 
 
+@data_app.command("register")
+@cli_errors
+def data_register(cik: Annotated[str, typer.Option("--cik", help="SEC CIK whose cached snapshot agents may cite.")]) -> None:
+    """Register a cached snapshot as a citable source (human-only: agents cannot insert sources)."""
+    normalized = normalize_cik(cik)
+    cached = read_cached_document(config.edgar_dir(), normalized, "companyfacts")
+    if cached is None:
+        raise NotFoundError(f"CIK{normalized} is not cached. Run: council human data fetch --cik {int(normalized)}")
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        source_id = register_snapshot_source(conn, CompanyFactsSnapshot(cached))
+    typer.echo(f"Registered source id={source_id}: CIK{normalized} retrieved {cached.meta.retrieved_at.isoformat()} sha256 {cached.meta.sha256[:12]}...")
+
+
 @data_app.command("inspect")
 @cli_errors
 def data_inspect(cik: Annotated[str, typer.Option("--cik", help="SEC CIK.")]) -> None:
@@ -309,3 +403,55 @@ def data_inspect(cik: Annotated[str, typer.Option("--cik", help="SEC CIK.")]) ->
 def data_manifest() -> None:
     """Rewrite data/edgar/MANIFEST.json from the cached documents."""
     typer.echo(f"Manifest written: {write_manifest(config.edgar_dir())}")
+
+
+# ---------------------------------------------------------------------------------------------
+# agent working directories
+# ---------------------------------------------------------------------------------------------
+
+AGENT_ROLES = {"bull": "bull-researcher", "bear": "bear-researcher"}
+
+
+@agents_app.command("init")
+@cli_errors
+def agents_init(
+    directory: Annotated[Path, typer.Option("--dir", help="Parent folder for the agent directories.")] = Path("agents"),
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing .council.env and wrapper files.")] = False,
+    switch_dir: Annotated[Path, typer.Option("--switch-dir", help="Folder with agent-manual.md and role-bull.md / role-bear.md.")] = Path("switch"),
+) -> None:
+    """Create bull-researcher/ and bear-researcher/ with the restricted-account settings and a `council-agent` wrapper.
+
+    Each directory gets a git-ignored `.council.env` holding ONLY the restricted agent account, its role and the
+    data folder, never the human's credentials. Register these folders as the agents' working directories in Switch Console.
+    """
+    import os
+    import shlex
+    import sys
+
+    password = config.db_password("agent", required=False)
+    if not password:
+        raise CouncilError("COUNCIL_DB_AGENT_PASSWORD is not set in .env; run `council db init` after setting it.")
+    exe = Path(sys.executable).with_name("council-agent")
+    if not exe.exists():
+        raise CouncilError(f"{exe} not found; run `pip install -e .` in this environment.")
+    data = config.data_dir().resolve()
+    host = config._get("COUNCIL_DB_HOST", "127.0.0.1")
+    port = config._get("COUNCIL_DB_PORT", "3307")
+    for role, folder in AGENT_ROLES.items():
+        target = (directory / folder).resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        env_file, wrapper = target / ".council.env", target / "council-agent"
+        if (env_file.exists() or wrapper.exists()) and not force:
+            raise CouncilError(f"{target} already has agent files; pass --force to overwrite them.")
+        env_file.write_text(
+            f"COUNCIL_AGENT_ROLE={role}\nCOUNCIL_DB_HOST={host}\nCOUNCIL_DB_PORT={port}\nCOUNCIL_DB_NAME={config.db_name()}\n"
+            f"COUNCIL_DB_AGENT_USER={config.db_user('agent')}\nCOUNCIL_DB_AGENT_PASSWORD={password}\nCOUNCIL_DATA_DIR={data}\n",
+            encoding="utf-8")
+        os.chmod(env_file, 0o600)
+        wrapper.write_text(f'#!/bin/sh\n# Runs the agent CLI from this directory so it reads only this directory\'s .council.env.\ncd "$(dirname "$0")" && exec {shlex.quote(str(exe))} "$@"\n', encoding="utf-8")
+        os.chmod(wrapper, 0o755)
+        manual, role_text = switch_dir / "agent-manual.md", switch_dir / f"role-{role}.md"
+        if manual.is_file() and role_text.is_file():
+            (target / "CLAUDE.md").write_text(role_text.read_text(encoding="utf-8") + "\n" + manual.read_text(encoding="utf-8"), encoding="utf-8")
+        typer.echo(f"{folder}: wrote {env_file.name} (mode 600, role={role}, restricted account only), the council-agent wrapper and CLAUDE.md in {target}")
+    typer.echo("Both files are git-ignored. Next: register each folder as an agent's working directory (see switch/SETUP.md).")

@@ -24,6 +24,13 @@ SEC_MAX_RPS_CEILING = 10.0  # SEC fair-access policy: max 10 requests/second
 
 _loaded = False
 
+# Agent mode: the agent tooling must never see the human's credentials. When active, every setting is
+# read from ONE agent-specific file and nothing else (no process environment, no ``.env``), and the
+# only database account that can be requested is ``agent``.
+_agent_values: dict[str, str] | None = None
+AGENT_ENV_FILENAME = ".council.env"
+AGENT_ENV_VAR = "COUNCIL_AGENT_ENV_FILE"
+
 
 def load_env() -> None:
     """Load ``.env`` from the working directory (or a parent). Real environment variables win."""
@@ -36,7 +43,36 @@ def load_env() -> None:
     _loaded = True
 
 
+def agent_mode() -> bool:
+    return _agent_values is not None
+
+
+def load_agent_env(path: Path | str | None = None) -> Path:
+    """Switch to agent mode, reading settings only from ``.council.env`` in the working directory
+    (or the file named by ``COUNCIL_AGENT_ENV_FILE``). Raises :class:`ConfigError` if it is missing."""
+    global _agent_values
+    from dotenv import dotenv_values
+
+    chosen = Path(path) if path else Path(os.environ.get(AGENT_ENV_VAR) or Path.cwd() / AGENT_ENV_FILENAME)
+    if not chosen.is_file():
+        raise ConfigError(
+            f"Agent settings file not found: {chosen}. Each agent directory needs a {AGENT_ENV_FILENAME} "
+            "holding the restricted database account and COUNCIL_AGENT_ROLE (see docs/AGENT_DESIGN.md)."
+        )
+    _agent_values = {k: v for k, v in dotenv_values(chosen).items() if v is not None}
+    return chosen
+
+
+def reset_agent_mode() -> None:
+    """Leave agent mode (used by tests)."""
+    global _agent_values
+    _agent_values = None
+
+
 def _get(name: str, default: str | None = None) -> str | None:
+    if _agent_values is not None:
+        value = _agent_values.get(name)
+        return default if value is None or value.strip() == "" else value.strip()
     load_env()
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -63,7 +99,13 @@ def db_name() -> str:
     return validate_identifier(_get("COUNCIL_DB_NAME", "investor_council") or "", "COUNCIL_DB_NAME")
 
 
+def _check_role(role: Role) -> None:
+    if _agent_values is not None and role != "agent":
+        raise ConfigError("Agent mode may only use the restricted agent database account.")
+
+
 def db_user(role: Role) -> str:
+    _check_role(role)
     var, default = {
         "admin": ("COUNCIL_DB_ADMIN_USER", "root"),
         "human": ("COUNCIL_DB_HUMAN_USER", "council_human"),
@@ -73,6 +115,7 @@ def db_user(role: Role) -> str:
 
 
 def db_password(role: Role, *, required: bool = True) -> str | None:
+    _check_role(role)
     var = {
         "admin": "COUNCIL_DB_ADMIN_PASSWORD",
         "human": "COUNCIL_DB_HUMAN_PASSWORD",
@@ -138,3 +181,11 @@ def sec_settings() -> SecSettings:
     if not 0 < rps <= SEC_MAX_RPS_CEILING:
         raise ConfigError(f"COUNCIL_SEC_MAX_RPS must be in (0, {SEC_MAX_RPS_CEILING}] (SEC limit is 10/s)")
     return SecSettings(user_agent=user_agent, max_rps=rps)
+
+
+def agent_role() -> str:
+    """The research role bound to this agent directory: ``bull`` or ``bear``."""
+    value = _get("COUNCIL_AGENT_ROLE")
+    if value not in ("bull", "bear"):
+        raise ConfigError(f"COUNCIL_AGENT_ROLE must be 'bull' or 'bear' in {AGENT_ENV_FILENAME}, got {value!r}")
+    return value

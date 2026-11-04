@@ -21,7 +21,7 @@ from council.edgar.models import SOURCE_NAME, Basis
 from council.errors import ClaimRuleError, EvidenceError, NotFoundError
 from council.evidence.freshness import FreshnessConfig, assess_freshness
 from council.evidence.verify import verify_fact, verify_file_integrity
-from council.sessions import SessionRecord, as_json
+from council.sessions import SessionLike, as_json
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,22 @@ def register_snapshot_source(conn: Connection, snapshot: CompanyFactsSnapshot) -
         },
     )
     return int(result.lastrowid)
+
+
+def find_snapshot_source(conn: Connection, snapshot: CompanyFactsSnapshot) -> int:
+    """Look up an already-registered snapshot (agent path: the agent account cannot insert sources).
+
+    Registering is a human step (``council human data register``) so an agent can only cite snapshots the
+    human has put in the database, never invent a source row.
+    """
+    key = f"edgar:CIK{snapshot.cik}:companyfacts:{snapshot.document.meta.sha256[:12]}"
+    found = conn.execute(text("SELECT id FROM sources WHERE source_key = :k"), {"k": key}).scalar()
+    if found is None:
+        raise EvidenceError(
+            f"The snapshot for CIK{snapshot.cik} is not registered as a source. Ask the human to run "
+            f"`council human data register --cik {int(snapshot.cik)}`."
+        )
+    return int(found)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -137,7 +153,7 @@ def _next_code(conn: Connection, table: str, session_id: int, prefix: str) -> st
 
 def record_fact_evidence(
     conn: Connection,
-    session: SessionRecord,
+    session: SessionLike,
     *,
     added_by: Agent,
     snapshot: CompanyFactsSnapshot,
@@ -148,6 +164,7 @@ def record_fact_evidence(
     period_end: date,
     period_start: date | None = None,
     claimed_value: Decimal | None = None,
+    register_source: bool = True,
 ) -> EvidenceRecord:
     """Store one financial-statement fact as evidence, verified against the snapshot.
 
@@ -196,7 +213,7 @@ def record_fact_evidence(
             notes.append(freshness.detail or "stale")
         flag_detail = " | ".join(notes) or None
 
-    source_id = register_snapshot_source(conn, snapshot)
+    source_id = register_snapshot_source(conn, snapshot) if register_source else find_snapshot_source(conn, snapshot)
     code = _next_code(conn, "evidence_refs", session.id, "E-")
     conn.execute(
         text(
@@ -298,7 +315,7 @@ def get_claim(conn: Connection, session_id: int, code: str) -> ClaimRecord:
 
 def add_claim(
     conn: Connection,
-    session: SessionRecord,
+    session: SessionLike,
     *,
     agent: Agent,
     claim_type: ClaimType,
@@ -370,12 +387,13 @@ class MetricOutcome:
 
 def record_metric_evidence(
     conn: Connection,
-    session: SessionRecord,
+    session: SessionLike,
     *,
     agent: Agent,
     snapshot: CompanyFactsSnapshot,
     metric: str,
     basis: Basis = "annual",
+    register_source: bool = True,
 ) -> MetricOutcome:
     """Look up a curated metric. Found: store verified evidence. Missing: store an explicit GAP claim."""
     found = lookup_metric(snapshot, metric, basis)
@@ -386,11 +404,12 @@ def record_metric_evidence(
     evidence = record_fact_evidence(
         conn, session, added_by=agent, snapshot=snapshot, metric_name=found.metric.label,
         taxonomy=fact.taxonomy, concept=fact.concept, unit=fact.unit, period_end=fact.end, period_start=fact.start,
+        register_source=register_source,
     )
     return MetricOutcome(found, evidence, None)
 
 
-def rule_claim(conn: Connection, session: SessionRecord, claim_code: str, ruling: Ruling, note: str | None = None) -> ClaimRecord:
+def rule_claim(conn: Connection, session: SessionLike, claim_code: str, ruling: Ruling, note: str | None = None) -> ClaimRecord:
     """Record the human's ruling on a claim."""
     if ruling not in ("accept", "reject", "needs_evidence"):
         raise ClaimRuleError(f"Unknown ruling {ruling!r}")

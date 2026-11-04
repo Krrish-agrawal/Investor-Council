@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import Connection, text
 
@@ -118,3 +118,51 @@ def get_session(conn: Connection, code: str) -> SessionRecord:
 def latest_session(conn: Connection) -> SessionRecord | None:
     row = conn.execute(text(f"SELECT {_COLUMNS} FROM research_sessions ORDER BY id DESC LIMIT 1")).first()
     return _record(row) if row else None
+
+
+class SessionLike(Protocol):
+    """What the evidence and claim services need from a session (satisfied by both views)."""
+
+    id: int
+    code: str
+    stage: int
+    session_date: date
+    freshness_cfg: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentSession:
+    """A session as an agent sees it: no ``portfolio_id`` (the agent account cannot read it)."""
+
+    id: int
+    code: str
+    target_ticker: str
+    target_cik: str | None
+    target_sector: str | None
+    thesis: str
+    stage: int
+    status: str
+    shared_summary: dict[str, Any]
+    freshness_cfg: dict[str, Any]
+    session_date: date
+    data_mode: str
+
+
+# Exactly the columns granted to the agent account (council/db/grants.py)
+_AGENT_COLUMNS = (
+    "id, code, target_ticker, target_cik, target_sector, thesis, stage, status, "
+    "shared_summary_json, freshness_cfg_json, session_date, data_mode"
+)
+
+
+def get_agent_session(conn: Connection, code: str) -> AgentSession:
+    if not _CODE.match(code):
+        raise CouncilError(f"Invalid session code {code!r}; expected something like S-0001")
+    row = conn.execute(text(f"SELECT {_AGENT_COLUMNS} FROM research_sessions WHERE code = :c"), {"c": code}).first()
+    if row is None:
+        raise NotFoundError(f"Session {code} not found")
+    return AgentSession(
+        id=int(row[0]), code=row[1], target_ticker=row[2], target_cik=row[3], target_sector=row[4], thesis=row[5],
+        stage=int(row[6]), status=row[7], shared_summary=as_json(row[8]), freshness_cfg=as_json(row[9]),
+        session_date=row[10], data_mode=row[11],
+    )

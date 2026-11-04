@@ -68,3 +68,35 @@ def test_missing_database_settings_fail_with_guidance(clean_env: pytest.MonkeyPa
 def test_version_flag() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0 and "investor-council" in result.stdout
+
+
+# ---------------- agent working directories ----------------
+
+
+def test_agents_init_writes_only_the_restricted_account_and_never_the_humans_secrets(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo = Path(__file__).parent.parent
+    clean_env.setenv("COUNCIL_DB_AGENT_PASSWORD", "agent-pw-123")
+    clean_env.setenv("COUNCIL_DB_HUMAN_PASSWORD", "HUMAN-SECRET-456")
+    clean_env.setenv("COUNCIL_DB_ADMIN_PASSWORD", "ADMIN-SECRET-789")
+    clean_env.setenv("COUNCIL_DATA_DIR", str(tmp_path / "data"))
+    target = tmp_path / "agents"
+    result = runner.invoke(app, ["human", "agents", "init", "--dir", str(target), "--switch-dir", str(repo / "switch")])
+    assert result.exit_code == 0, result.stderr
+    for role, folder in (("bull", "bull-researcher"), ("bear", "bear-researcher")):
+        d = target / folder
+        env = (d / ".council.env").read_text()
+        assert f"COUNCIL_AGENT_ROLE={role}" in env and "COUNCIL_DB_AGENT_PASSWORD=agent-pw-123" in env
+        assert f"COUNCIL_DATA_DIR={tmp_path / 'data'}" in env  # absolute
+        for secret in ("HUMAN-SECRET-456", "ADMIN-SECRET-789", "HUMAN_PASSWORD", "ADMIN"):
+            assert secret not in env and secret not in (d / "CLAUDE.md").read_text()
+        assert oct((d / ".council.env").stat().st_mode & 0o777) == "0o600"
+        assert (d / "council-agent").stat().st_mode & 0o111  # executable wrapper
+        claude = (d / "CLAUDE.md").read_text()
+        assert "./council-agent next S-XXXX" in claude and ("Bull Researcher" if role == "bull" else "Bear Researcher") in claude
+    again = runner.invoke(app, ["human", "agents", "init", "--dir", str(target)])
+    assert again.exit_code == 1 and "--force" in again.stderr  # never silently overwrites
+
+
+def test_agents_init_needs_the_agent_password(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["human", "agents", "init", "--dir", str(tmp_path / "a")])
+    assert result.exit_code == 1 and "COUNCIL_DB_AGENT_PASSWORD" in result.stderr

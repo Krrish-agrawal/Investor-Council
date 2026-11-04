@@ -299,23 +299,6 @@ def test_dossier_end_to_end_from_the_database(conn, snapshot) -> None:
 # ---------------- accounts and the privacy boundary ----------------
 
 
-@pytest.fixture
-def accounts(monkeypatch: pytest.MonkeyPatch, mysql_admin: Engine, test_db: str) -> Iterator[dict[str, str]]:
-    """Uniquely named test accounts (apply_grants resets privileges, so never reuse the real ones)."""
-    suffix = uuid.uuid4().hex[:8]
-    names = {"human": f"t_human_{suffix}", "agent": f"t_agent_{suffix}"}
-    monkeypatch.setenv("COUNCIL_DB_HUMAN_USER", names["human"])
-    monkeypatch.setenv("COUNCIL_DB_AGENT_USER", names["agent"])
-    monkeypatch.setenv("COUNCIL_DB_HUMAN_PASSWORD", "Human-" + suffix + "-pw")
-    monkeypatch.setenv("COUNCIL_DB_AGENT_PASSWORD", "Agent-" + suffix + "-pw")
-    monkeypatch.setenv("COUNCIL_DB_NAME", test_db)
-    apply_grants(mysql_admin, test_db)
-    yield names
-    with mysql_admin.begin() as c:
-        for user in names.values():
-            c.execute(text(f"DROP USER IF EXISTS '{user}'@'%'"))
-
-
 def test_agent_account_cannot_see_the_portfolio(engine: Engine, accounts: dict[str, str]) -> None:
     with engine.begin() as c:  # committed so other connections can see it
         report = parse_portfolio_csv_text(CSV)

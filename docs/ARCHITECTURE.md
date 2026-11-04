@@ -9,21 +9,23 @@ Two agents; human-initiated stages; local CSV processing with a sanitised room s
 
 ### Implementation status (Nov 3 2026, before kickoff)
 
-The deterministic foundation exists and is tested (197 tests; Python 3.13; MySQL 8.0.46). Everything that
-needs Switch is pending until the hackathon starts. Sections below describe the approved design; commands and
-components marked **(pending)** are not built yet.
+The deterministic foundation and the agent tooling exist and are tested (217 tests; Python 3.13; MySQL 8.0.46).
+Connecting Switch Console and running live agents is still pending (it needs Console installed; see `switch/SETUP.md`).
+Sections below describe the approved design; components marked **(pending)** are not built yet.
 
 | Component | Status | Where |
 |---|---|---|
 | `council db init`, `council db status` | **Implemented** | `council/cli/db_cmds.py`, `council/db/` |
-| `council human` CLI | **Implemented:** `ingest`, `summary` (`--shared`), `session new` / `show`, `rule`, `report` (`--local-detail`, `--note`, `--save`, `--strict`), `data fetch` / `inspect` / `manifest`. **Pending:** `advance`, `status`, `finalize` | `council/cli/human.py` |
-| `council agent` CLI and stage checks | **Pending** (the `stage` column and per-stage uniqueness constraints exist) | |
+| `council human` CLI | **Implemented:** `ingest`, `summary` (`--shared`), `session new` / `show`, `status`, `advance`, `rule`, `finalize`, `report` (`--local-detail`, `--note`, `--save`, `--strict`), `data fetch` / `register` / `inspect` / `manifest`, `agents init` | `council/cli/human.py`, `council/stages.py` |
+| `council-agent` / `council agent` CLI and stage validation | **Implemented and tested end to end** against a real MySQL server as the restricted account: `next`, `data list` / `show`, `evidence add` / `list`, `claim add` / `list`, `submit`, `brief show --other`, `challenge add`, `final`, `whoami` | `council/agent/` |
 | MySQL schema, migrations, human and agent accounts | **Implemented**, grants tested | `council/db/`, DATABASE_SCHEMA.md |
 | Portfolio ingestion, metrics, sanitised summary | **Implemented** | `council/portfolio/` |
 | SEC EDGAR adapter (CIK lookup, company facts, filing metadata, cache, validation, fiscal-period identification) | **Implemented, tested on synthetic fixtures only**; never run against live SEC responses (test T11) | `council/edgar/` |
 | Evidence storage, verification, claim typing, GAP, freshness and conflict flags | **Implemented** as a library | `council/evidence/` |
 | Dossier renderer, advice-language lint | **Implemented** | `council/report/` |
-| Switch room, agents, room and agent instructions, Day-1 tests T1 to T10 | **Pending** (must be built during the event) | |
+| Instruction texts (`switch/`), agent directory generator (`council human agents init`), setup guide (`switch/SETUP.md`) | **Written**; not yet loaded into a running Switch | `switch/`, `agents/` (generated, git-ignored) |
+| Ruling gate (a session cannot be finalized while a flagged claim lacks an accept/reject ruling) | **Implemented and tested** | `council/report/gate.py`, `council/stages.py` |
+| Switch Console connected, the room and live agents, Day-1 tests T1 to T10 | **Pending**: Switch Console is not installed on the development machine | |
 | Frozen EDGAR dataset (3 to 5 companies) | **Pending** (Day 2) | |
 
 ---
@@ -42,7 +44,7 @@ flowchart LR
 
     subgraph LOCAL["Local only — never in the room"]
       CSV[/"portfolio.csv"/]
-      HCLI["council human CLI<br/>ingest · summary · session · rule ·<br/>report · data (advance/status/finalize pending)"]
+      HCLI["council human CLI<br/>ingest · summary · session · rule ·<br/>status · advance · rule · finalize · report · data"]
     end
 
     subgraph SW["Switch (managed by Switch Console)"]
@@ -58,7 +60,7 @@ flowchart LR
       R["bear-researcher"]
     end
 
-    ACLI["council agent CLI (pending, built after kickoff)<br/>next · data · evidence · claim ·<br/>submit · brief show · challenge"]
+    ACLI["council-agent CLI (restricted account)<br/>next · data · evidence · claim ·<br/>submit · brief show · challenge"]
     DB[("MySQL 8 (Compose)<br/>agent user: research tables only<br/>human user: everything")]
     FX[/"data/edgar/CIK…/ frozen snapshots (git-ignored)<br/>+ sidecar meta and MANIFEST<br/>(url, retrieved_at, sha256)"/]
     CFG[/"config/freshness.yaml<br/>(heuristics)"/]
@@ -94,15 +96,15 @@ flowchart LR
 | **Switch Console** | Registers agents, starts a Claude Code session when an agent is addressed, holds the agent connection, runs the local Switch server and bundled Mattermost [Docs: quickstart, switch-console] | Run when the laptop sleeps or Console is closed — local agents stop answering [Docs: what-keeps-your-agent-running] |
 | **Switch room (Mattermost)** | Shared context: conversation, Room Instructions (shown to every agent that joins), human interjection, audit trail [Docs: create-a-room, shared-context] | Enforce what agents decide; hide messages from agents (every agent in a room can read its conversation [Docs: working-safely-with-agents]) |
 | **bull-researcher / bear-researcher** | Research from frozen EDGAR data via the agent CLI; file typed claims; post briefs, challenge responses and final positions | See the portfolio DB tables or CSV (by design/grants/convention); trigger each other; give advice |
-| **`council human` CLI** | Implemented: ingest CSV; math; create sessions; print the sanitised summary; record rulings; render the dossier; fetch and inspect EDGAR snapshots. Pending: check status, advance stage, finalize | Run inside an agent session |
-| **`council agent` CLI** (pending) | Read-only data access to frozen sources; create evidence/claims; submit per stage; show the *other* agent's filed brief once stage ≥ 2; file challenge responses and final positions; enforce `stage` checks | Read `portfolios`/`holdings`; advance the stage; write rulings |
+| **`council human` CLI** | Ingest CSV; math; create sessions; print the sanitised summary; status; advance the stage; record rulings; finalize (the ruling gate); render the dossier; fetch, register and inspect EDGAR snapshots; generate the agent directories | Run inside an agent session |
+| **`council-agent` CLI** | Read-only data access to frozen sources; create evidence/claims; submit per stage; show the *other* agent's filed brief once stage ≥ 2 (and only after filing your own); file challenge responses (at most three) and final positions; enforce `stage` checks. Role and account come only from the agent directory's `.council.env` | Read `portfolios`/`holdings`/`dossiers`; advance the stage; write rulings; register sources; load the human's `.env`; request any other account |
 | **MySQL 8** | Durable ledger (10 domain tables plus `schema_migrations`; see DATABASE_SCHEMA). Two accounts with different grants (implemented, tested) | Be written to directly by agents (CLI only) |
 | **`data/edgar/`** | Local cache of frozen responses (`CIK##########/`) with sidecar metadata and `MANIFEST.json`; git-ignored by default, a chosen dataset is added deliberately with `git add -f` | Update silently: a cached file whose SHA-256 no longer matches its sidecar is refused, and `--refresh` is explicit |
 | **`config/freshness.yaml`** | Freshness heuristics | Claim to be an accounting or regulatory standard |
 
 ## 4. Stages and data flow
 
-The human controls stages. Commands marked **(pending)** do not exist yet. The agent CLI (pending) checks `research_sessions.stage` (1 → 2 → 3). `council human advance` (pending) normally requires both agents' submissions for the current stage and offers `--force` (needed for the sequential fallback or after an agent failure).
+The human controls stages. The agent CLI checks `research_sessions.stage` (1 → 2 → 3). `council human advance` normally requires both agents' submissions for the current stage and offers `--force` (needed for the sequential fallback or after an agent failure).
 
 **Step 0 — local preparation (terminal, outside Switch)**
 `council human ingest --file …` → weights, sector exposure, concentration, overlap → MySQL. `council human session new --ticker … --thesis …` → `S-0001`, `stage = 1`, prints the **sanitised summary** (also stored in `research_sessions.shared_summary_json`). Both are implemented.
@@ -111,13 +113,13 @@ The human controls stages. Commands marked **(pending)** do not exist yet. The a
 Human posts (template in AGENT_DESIGN §6) tagging `@bull @bear` with the summary, ticker, thesis and session id. Each agent: `council agent next S-0001 --as bull` → data index, sanitised summary, allowed commands → `evidence add` / `claim add` / `gap add` → `submit --stage 1` → posts a ≤120-word brief with its claim IDs. Humans see both briefs in the thread.
 
 **Stage 2 — Challenge round**
-Human runs `council human status` (pending: both stage-1 submissions present?) and `advance --to 2` (pending), then posts the challenge request tagging both. Each agent: `brief show --other` (works only at stage ≥ 2) → `challenge add` per targeted claim (disputes / partly_agrees / agrees / needs_evidence; must cite evidence or say none found) → `submit --stage 2` → posts a summary in the room.
+Human runs `council human status` (both stage-1 submissions present?) and `advance --to 2`, then posts the challenge request tagging both. Each agent: `brief show --other` (works only at stage ≥ 2) → `challenge add` per targeted claim (disputes / partly_agrees / agrees / needs_evidence; must cite evidence or say none found) → `submit --stage 2` → posts a summary in the room.
 
 **Human rulings**
-Human reads the room and the dossier's "Missing information" section (disputed, unsupported, conflicting, stale and gap items; a dedicated `status --disputes` listing is pending). For each: `council human rule S-0001 C-X2 reject --note "…"` (implemented). At most one targeted follow-up message to one agent for `needs_evidence`.
+Human reads the room, `council human status` (it lists every unresolved flagged claim with the reasons) and the dossier. For each: `council human rule S-0001 C-X2 reject --note "…"` (implemented). At most one targeted follow-up message to one agent for `needs_evidence`.
 
 **Stage 3 — Final synthesis**
-Human `advance --to 3` (pending) and posts the synthesis request (each agent files a final position with concessions and what it could not establish, taking the human's rulings into account — rulings are visible via `council agent next`). Then `council human report --session S-0001` (implemented) renders the dossier from the ledger and the human posts it to the room (paste, or attachment if T9 passes) with their own decision note (`--note`; a separate `finalize` command is pending).
+Human `advance --to 3` and posts the synthesis request (each agent files a final position with concessions and what it could not establish, taking the human's rulings into account — rulings are visible via `council agent next`). Then `council human report --session S-0001` (implemented) renders the dossier from the ledger and the human posts it to the room (paste, or attachment if T9 passes) with their own decision note, and `council human finalize S-0001 --note "…"` stores the FINAL dossier.
 
 **Principle:** chat carries discourse and pointers; the ledger carries structured truth. Each stage message includes `[session S-0001]` and agents re-hydrate from `council agent next`, because a session isn't guaranteed to have prior room history [Docs: connectors-and-runtime].
 
@@ -162,7 +164,7 @@ Design consequences:
 |---|---|---|
 | Local prep | Runs ingest; decides what summary to paste | CSV stays in the terminal |
 | Stage 1/2/3 triggers | Posts each stage message | Agents act only when a person addresses them |
-| Rulings | Accepts / rejects / asks for evidence per flagged item | `council human rule` records them. `council human report` labels every unruled claim ("not yet ruled", "Awaiting a human ruling"); a hard refusal while flagged claims lack a ruling is pending |
+| Rulings | Accepts / rejects / asks for evidence per flagged item | `council human rule` records them. **The gate:** a claim is flagged if it is UNVERIFIED, cites non-verified or STALE/CONFLICT evidence, or the other agent disputed it or asked for evidence. A flagged claim is resolved only by `accept` or `reject` (`needs_evidence` is not a resolution). `council human finalize` refuses while any flagged claim is unresolved, with no override; draft dossiers show unresolved claims under "UNRESOLVED" with a banner and never among findings |
 | Interjection | Can address either agent at any time | Shared room |
 | Decision note | Writes the conclusion in their own words | The template never fills it (the `--note` text is the human's) |
 
@@ -199,18 +201,22 @@ Investor-Council/
   docs/
   council/                 # python package: cli/, db/, portfolio/, edgar/, evidence/, report/
   config/freshness.yaml    # freshness heuristics
+  switch/                  # room instructions, agent manual and role texts, SETUP.md (committed)
+  agents/                  # generated by `council human agents init`: CLAUDE.md, .council.env, council-agent wrapper (git-ignored)
   samples/portfolio.csv    # synthetic sample portfolio (invented tickers and prices)
   data/edgar/              # local EDGAR cache: CIK##########/{companyfacts,submissions}.json + .meta.json, MANIFEST.json (git-ignored)
   docker-compose.yml       # MySQL only (Switch Console manages Switch's own containers)
-  tests/                   # 197 tests; synthetic EDGAR fixtures in tests/synthetic.py
+  tests/                   # 217 tests; synthetic EDGAR fixtures in tests/synthetic.py
   pyproject.toml           # requires Python >=3.13,<3.14
   .env.example             # every secret blank; the real .env is git-ignored
   .gitignore               # .env*, .council.env, .switch/, every *.csv except the sample, *.local.md, dumps, SEC cache
 ```
-Pending (created after kickoff): `agents/bull-researcher/` and `agents/bear-researcher/` (agent directories with
-`CLAUDE.md` if T2 passes and a git-ignored `.council.env` holding only the restricted DB user), `switch/` (room and
-agent instruction text, setup steps) and `scripts/` (health check; reset is currently `docker compose down -v`
-followed by `council db init`).
+Also present: `switch/` (committed: `room-instructions.md`, `agent-manual.md`, `role-bull.md`, `role-bear.md`,
+`SETUP.md`) and `agents/bull-researcher/`, `agents/bear-researcher/` (generated by `council human agents init`, all
+git-ignored: a `.council.env` holding only the restricted DB account and the role, a `council-agent` wrapper, and a
+`CLAUDE.md` composed from the role text plus the manual; whether Console-launched Claude Code reads `CLAUDE.md` is
+UNVERIFIED, test T2). Pending: `scripts/` (health check; reset is currently `docker compose down -v` followed by
+`council db init`).
 
 ## 10. Market data architecture
 

@@ -23,6 +23,7 @@ dev = ["pytest>=8,<9"]
 
 [project.scripts]
 council = "council.cli.main:app"
+council-agent = "council.agent.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["council*"]

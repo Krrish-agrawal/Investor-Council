@@ -11,7 +11,8 @@ Mitigations that exist in code are marked here; everything touching Switch is **
 
 | Risk | Status |
 |---|---|
-| S1 to S14 (Switch integration), A1, A3, A4, A6 to A8, A11 | **Pending**: need the Switch room and agents |
+| S1 to S14 (Switch integration), A3, A6 to A8, A11 | **Pending**: need live agents in Switch |
+| A1 agents ignore instructions, A4 convergence | **Partly implemented:** the tools enforce the stage rules (out-of-stage commands, reading the other's brief before stage 2, work after `submit`, finalizing with unresolved claims are all refused). Whether live agents follow the protocol is pending |
 | A2 hallucinated figures | Library **implemented and tested** (`FACT` needs verified evidence; the verifier re-reads the hash-checked snapshot; the dossier body is rendered by Python). The agent-facing commands are pending |
 | A5 advice language | Dossier disclaimer and keyword lint **implemented and tested** (`council human report`, `--strict`); agent output is not yet produced |
 | A9 prompt injection | MVP surface is small and **implemented**: the CSV is parsed by code, there is no live web access, and filing text evidence is not stored yet |
@@ -126,8 +127,10 @@ Mitigations that exist in code are marked here; everything touching Switch is **
 | I4 | **Session codes use `MAX + 1`**: concurrent writers could collide (the unique constraint prevents duplicates but one writer would fail) | Single-user tool | Accepted |
 | I5 | **Migrations are not atomic** (MySQL DDL auto-commits) | `CREATE TABLE IF NOT EXISTS`, so a failed run can be repeated; applied migrations are checksummed | Mitigated |
 | I6 | **Secrets are plain text in `.env`** and readable by anything running as the same user | Passwords have no defaults; `.env` is git-ignored; the restricted account has the least privilege that works | Accepted, documented |
-| I7 | **The dossier does not refuse unruled claims** (the design says it should) | It labels every unruled claim ("not yet ruled", "Awaiting a human ruling"); a hard gate belongs to the pending stage tooling | Open: a dossier can be rendered and shared with unruled claims |
+| I7 | **A dossier could be shared with unresolved flagged claims** | Resolved: a draft shows them under UNRESOLVED with a banner and never among findings; `council human finalize` refuses while any is unresolved, with no override. A human can still paste a *draft* anywhere, but it says DRAFT | Mitigated |
 | I8 | **A real EDGAR response may not match the strict parser** (for example an unexpected accession format) and be refused | Nothing is cached when validation fails; T11 will show real shapes; any change to strictness must be a reviewed code change | Open until T11 |
 | I9 | **Strict CSV rules reject common broker exports** (currency symbols, thousands separators, extra encodings) | Errors name the line and the problem; the user fixes the file; nothing is repaired silently | By design |
 | I10 | **A local MySQL on port 3306 would clash** | Default project port is 3307 | Mitigated |
 | I11 | **Local-detail dossiers contain positions** and could be written to a committable path | `*.local.md` and every CSV except the sample are git-ignored; the README example uses a `.local.md` name | Mitigated |
+| I12 | **Switch Console is not installed on the development machine**, and installing it ties the agents to that machine's Claude account | Setup steps and decisions are in `switch/SETUP.md`; every other piece is built and tested without Switch | Open: needs the owner's decision |
+| I13 | **The agent account trusts its own config directory**: an agent that edits `.council.env` could change its role | The role is bound at generation time and the account is restricted regardless of role; same-OS-user limit documented (P2) | Accepted |

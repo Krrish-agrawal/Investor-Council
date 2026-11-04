@@ -19,7 +19,7 @@ its grants already exist and are tested.
 - Accounts use host `%`, not `127.0.0.1` (section 3 explains why).
 - Migrations are plain versioned SQL with a `schema_migrations` table (no Alembic); `council db init` /
   `council db status` replace the draft's `council human db init`.
-- Rulings are rendered, not enforced: `council human report` labels unruled claims instead of refusing (section 4).
+- The ruling gate is enforced by `council human finalize` (section 4); a draft `report` always renders and labels unresolved claims.
 
 Principles: minimal tables; every external fact traceable to a source row with URL, fiscal period, filing
 date and retrieval time; no brokerage identifiers, names, emails or credentials; no price data in the MVP;
@@ -48,9 +48,8 @@ Agent-readable: `research_sessions` (selected columns), `sources`, `evidence_ref
 columns of `claims`.
 
 Implementation status: `portfolios`, `holdings`, `research_sessions`, `sources`, `evidence_refs`, `claims`,
-`claim_evidence` and `dossiers` are written by implemented code. `submissions` and `challenges` exist (with
-their uniqueness constraints) but have no writing commands yet; those belong to the agent tooling built after
-kickoff. The dossier renderer already reads `challenges` if rows exist.
+`claim_evidence` and `dossiers` are written by implemented code. `submissions` and `challenges` are written by the agent commands (`council-agent submit`, `final`, `challenge add`)
+and read by the dossier renderer.
 
 ## 2. DDL (`council/db/migrations/0001_initial.sql`)
 
@@ -295,10 +294,12 @@ whatever that user can, including `.env` (see ARCHITECTURE section 8).
 | `STALE`: fact age (`session_date` minus the fact's period end) exceeds the annual limit (annual basis) or quarterly limit (everything else), or snapshot age exceeds the snapshot limit; limits come from the session's `freshness_cfg_json`, labelled application heuristics | `assess_freshness` | Implemented, tested |
 | `CONFLICT`: the same concept, unit and period carries different values in different filings (e.g. a restatement); the latest-filed value is selected and the others are listed with filing dates. `CONFLICT` takes precedence over `STALE` in the single `flag` column; both texts go into `flag_detail` | `resolve_entries`, `record_fact_evidence` | Implemented, tested |
 | Human rulings: `accept`, `reject`, `needs_evidence`, stored on the claim with note and UTC time | `rule_claim`, `council human rule` | Implemented, tested |
-| One submission per agent per stage; one challenge response per agent per target claim | DB `uq_sub`, `uq_ch` | Constraints exist; no writing commands yet |
-| Agent commands act only at the matching `research_sessions.stage`; reading the other agent's brief is refused before stage 2 | agent CLI | **Pending** (built after kickoff) |
-| `advance` requires both agents' submissions unless forced; `finalize` requires a human note | human CLI | **Pending** |
-| The dossier refuses to render while flagged claims lack a ruling | human CLI | **Not implemented as a refusal.** `council human report` renders and labels every unruled claim ("not yet ruled", "Awaiting a human ruling"). A hard gate is part of the pending stage tooling. |
+| One submission per agent per stage; one challenge response per agent per target claim; at most three challenges per agent | DB `uq_sub`, `uq_ch`; agent CLI | Implemented, tested |
+| Agent commands act only at the matching `research_sessions.stage` (evidence and claims at stages 1 and 2, challenges at stage 2, the final position at stage 3); work is frozen after `submit`; the other agent's brief is refused before stage 2 and until you have filed your own; a closed session refuses all agent work | agent CLI (`council/agent/service.py`) | Implemented, tested |
+| `advance` moves one stage at a time and requires both agents' submissions unless `--force`; `finalize` needs stage 3, a non-empty human note and both final positions (unless `--force-missing-final`) | human CLI (`council/stages.py`) | Implemented, tested |
+| **Ruling gate.** A claim is *flagged* if it is `UNVERIFIED`, cites evidence that is not `VERIFIED` or is flagged `STALE`/`CONFLICT`, or the other agent challenged it with `disputes` or `needs_evidence`. A flagged claim is *resolved* only by a human ruling of `accept` or `reject`; `needs_evidence` is not a resolution. `finalize` and `render_dossier(final=True)` refuse while any flagged claim is unresolved, with no override; a draft dossier lists them under UNRESOLVED with a banner and never among findings | `council/report/gate.py`, `council/stages.py` | Implemented, tested |
+| A `disputes` challenge without counter-evidence is stored as `needs_evidence` | agent CLI | Implemented, tested |
+| Agents may cite only their own evidence; agents cannot register sources (the agent account has no `INSERT` on `sources`); only snapshots the human registered with `council human data register` can be cited | agent CLI, DB grants | Implemented, tested |
 
 ## 5. Example records
 

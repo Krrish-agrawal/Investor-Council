@@ -14,8 +14,8 @@ Conventions: **[Docs: page]** = verified against docs.switchagents.ai (page name
 
 ### Implementation status (Nov 3 2026, before kickoff)
 
-The deterministic foundation is built and tested (197 tests, MySQL 8 and Python 3.13). The Switch workflow is
-deliberately not started: the hackathon requires it to be built during the event.
+The deterministic foundation and the agent tooling are built and tested (217 tests, MySQL 8 and Python 3.13). The live
+Switch workflow is not running yet: Switch Console still has to be installed and connected (see `switch/SETUP.md`).
 
 | MVP feature (section 4) | Status |
 |---|---|
@@ -25,10 +25,11 @@ deliberately not started: the hackathon requires it to be built during the event
 | 8. Dossier | **Implemented**: deterministic renderer, `council human report`; agent-written sections arrive after kickoff |
 | 9. MySQL persistence | **Implemented** (10 tables, migrations, human and agent accounts) |
 | 10. Reproducible setup | **Implemented**: README, Docker Compose, `council db init` |
-| 1. Switch room and two agents; 7. stage flag and `council agent` commands; 11. sequential-fallback demo | **Pending**: built after kickoff, after the Day-1 tests (T1 to T11) |
+| 7. Stage flag, `council agent` commands, stage control (`advance`, `status`, `finalize`) and the ruling gate | **Implemented and tested end to end** with a scripted human and two scripted researchers (no LLM) |
+| 1. Switch room and two live agents; 11. sequential-fallback demo | **Pending**: needs Switch Console connected; instruction texts and agent directories are ready |
 
-Known behaviour differences from the plan below: `council human report` labels unruled claims instead of
-refusing to render; `advance`, `status` and `finalize` do not exist yet.
+A draft dossier (`council human report`) always renders and shows unresolved flagged claims under UNRESOLVED; the final
+dossier (`council human finalize`) is refused while any flagged claim lacks an accept/reject ruling.
 
 ---
 
@@ -57,9 +58,9 @@ The human controls every stage. Stage messages are sent by the human; Switch doc
 |---|---|---|---|
 | **0. Prepare (local, outside the room)** | Human | Terminal | `council human ingest --file portfolio.csv` validates the CSV and computes weights, sector exposure, concentration and overlap **in Python**; rows go to MySQL. `council human session new --ticker … --thesis …` opens session `S-0001` and prints a **sanitised summary**. The raw CSV never goes to the room. |
 | **1. Initial analysis** | Human → Bull + Bear | Room (one thread) | Human posts the sanitised summary, the ticker and the thesis, tagging `@bull @bear`. Each agent independently builds a case from frozen EDGAR data, files typed claims with evidence, and posts a short brief. They are told to file before reading the other's. |
-| **2. Challenge round** | Human → Bull + Bear | Room | Human advances the stage (`council human advance`, pending) and asks both to challenge the other's findings. Each reads the other's filed brief (via CLI), then responds claim-by-claim: disputes / partly agrees / agrees / needs evidence, citing claim IDs and evidence. |
+| **2. Challenge round** | Human → Bull + Bear | Room | Human advances the stage (`council human advance`) and asks both to challenge the other's findings. Each reads the other's filed brief (via CLI), then responds claim-by-claim: disputes / partly agrees / agrees / needs evidence, citing claim IDs and evidence. |
 | **Human rulings** | Human | Room + Terminal | Human reviews disputed, unsupported, conflicting and stale items and records rulings: accept · reject · needs more evidence (`council human rule …`). *Needs evidence* may trigger one targeted follow-up message to one agent. |
-| **3. Final synthesis** | Human → Bull + Bear, then Python | Room + Terminal | Human asks both to file a final position that includes concessions and what they could not establish. Human then runs `council human report`, which renders a **structured research dossier** deterministically from the database and posts it back to the room. Human adds their own decision note (`--note`; a `finalize` command is pending). |
+| **3. Final synthesis** | Human → Bull + Bear, then Python | Room + Terminal | Human asks both to file a final position that includes concessions and what they could not establish. Human then runs `council human report`, which renders a **structured research dossier** deterministically from the database and posts it back to the room. Human finalizes with their own decision note (`council human finalize --note`). |
 
 Target duration for one full run on the sample data: **< 20 minutes** including human reading time (to be measured; it is a target, not a result).
 
@@ -72,7 +73,7 @@ Target duration for one full run on the sample data: **< 20 minutes** including 
 4. **Frozen SEC EDGAR dataset** for 3–5 US-listed companies: financial-statement data with source URL, fiscal period, period dates, **filing date**, form, accession number, retrieval timestamp and content hash. Labelled `FROZEN_SNAPSHOT` — never "live". The local cache is git-ignored; a chosen dataset is added deliberately with `git add -f`.
 5. **Evidence ledger:** every claim typed `FACT | ASSUMPTION | UNVERIFIED | GAP`. A `FACT` requires ≥1 evidence reference that passed deterministic verification against the stored snapshot.
 6. **Data-quality flags:** `STALE` (against configurable heuristics), `CONFLICT` (e.g., restated values for the same period, both shown with filing dates), `GAP` (missing data is recorded, never filled).
-7. **Three human-controlled stages**; agent CLI commands check the session's `stage` so the challenge round cannot run before stage-1 submissions exist. This is a flag, not a workflow engine. (The `stage` column and the per-stage uniqueness constraints exist; the agent CLI and `advance` are pending.)
+7. **Three human-controlled stages**; agent CLI commands check the session's `stage` so the challenge round cannot run before stage-1 submissions exist. This is a flag, not a workflow engine. (Implemented: the `stage` column, the per-stage uniqueness constraints, the agent CLI checks and `advance`.)
 8. **Dossier** rendered by a deterministic template: sanitised exposure, agreed facts, contested claims with human rulings, concessions, data gaps and freshness flags, open questions, and the human's own decision field (never auto-filled).
 9. **MySQL persistence** via a small Python CLI (`council`) with two command groups (human / agent).
 10. **Reproducible setup:** README, `docker compose` for MySQL, `council db init` and Python 3.13; the frozen dataset is added deliberately once chosen. There is no separate bootstrap script.

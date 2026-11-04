@@ -13,6 +13,7 @@ from sqlalchemy import Engine, text
 
 from council import config
 from council.db.engine import make_engine
+from council.db.grants import apply_grants
 from council.db.migrate import apply_migrations, ensure_database
 from council.edgar.client import EdgarClient
 from tests import synthetic
@@ -121,3 +122,20 @@ def write_json(path: Path, data: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def accounts(monkeypatch: pytest.MonkeyPatch, mysql_admin: Engine, test_db: str) -> Iterator[dict[str, str]]:
+    """Uniquely named test accounts (apply_grants resets privileges, so never reuse the real ones)."""
+    suffix = uuid.uuid4().hex[:8]
+    names = {"human": f"t_human_{suffix}", "agent": f"t_agent_{suffix}"}
+    monkeypatch.setenv("COUNCIL_DB_HUMAN_USER", names["human"])
+    monkeypatch.setenv("COUNCIL_DB_AGENT_USER", names["agent"])
+    monkeypatch.setenv("COUNCIL_DB_HUMAN_PASSWORD", "Human-" + suffix + "-pw")
+    monkeypatch.setenv("COUNCIL_DB_AGENT_PASSWORD", "Agent-" + suffix + "-pw")
+    monkeypatch.setenv("COUNCIL_DB_NAME", test_db)
+    apply_grants(mysql_admin, test_db)
+    yield names
+    with mysql_admin.begin() as c:
+        for user in names.values():
+            c.execute(text(f"DROP USER IF EXISTS '{user}'@'%'"))

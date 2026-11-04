@@ -130,20 +130,34 @@ def test_missing_information_lists_gaps_failures_flags_and_standing_gap() -> Non
     assert "E-3" in section and "verification FAILED" in section and "Not treated as evidence" in section
     assert "E-2" in section and "CONFLICT" in section and "E-4" in section and "STALE" in section
     assert "C-X1" in section and "asked for more evidence" in section
-    assert "Awaiting a human ruling: C-B2, C-B3" in section
+    assert "Unresolved flagged claims (no accept/reject ruling yet): C-B3, C-X1, C-X3" in section
     assert "No stock-price or market-data source" in section
 
 
-def test_claims_are_grouped_by_type_and_never_blend_facts_with_unverified() -> None:
+def test_claims_are_partitioned_so_flagged_claims_never_look_approved() -> None:
     md = render(FULL)
     bull = md.split("## 4.")[1].split("## 5.")[0]
-    assert "Supported by verified evidence (FACT)" in bull and "C-B1" in bull and "accepted by the human" in bull
-    assert "Assumptions" in bull and "Two quarters of decline." in bull and "Basis: C-B1" in bull
-    assert "Unverified (not presented as fact)" in bull and "C-B3" in bull
+    # C-B1 is a verified FACT but the Bear disputed it, so it is flagged; the human accepted it
+    assert "### Flagged, then accepted by the human" in bull and "C-B1" in bull.split("### Flagged, then accepted by the human")[1].split("###")[0]
+    assert "Supported by verified evidence (FACT); no flag raised" not in bull  # no unflagged FACT exists here
+    assert "Assumptions (inferences" in bull and "Two quarters of decline." in bull and "Basis: C-B1" in bull
+    unresolved = bull.split("### UNRESOLVED")[1]
+    assert "C-B3" in unresolved and "not yet ruled" in unresolved and "UNVERIFIED: no verified evidence" in unresolved
     assert "C-B4" not in bull  # GAP claims live under Missing information
     bear = md.split("## 5.")[1].split("## 6.")[0]
     assert "Rejected by the human" in bear and "C-X2" in bear and "No support" in bear
-    assert "Downgraded from FACT" in bear
+    assert "C-X1" in bear.split("### UNRESOLVED")[1] and "human asked for more evidence" in bear
+    assert "cites evidence E-2 flagged CONFLICT" in bear and "Downgraded from FACT" in bear.replace("downgraded from FACT", "Downgraded from FACT")
+
+
+def test_a_flagged_claim_is_never_listed_among_unflagged_findings() -> None:
+    md = render(FULL)
+    for section in (md.split("## 4.")[1].split("## 5.")[0], md.split("## 5.")[1].split("## 6.")[0]):
+        for heading in ("Supported by verified evidence (FACT); no flag raised", "Assumptions (inferences"):
+            if heading in section:
+                block = section.split(heading)[1].split("###")[0]
+                for code in ("C-B1", "C-B3", "C-X1", "C-X3"):
+                    assert f"- **{code}**" not in block, (heading, code)
 
 
 def test_rejected_claims_leave_the_live_sections() -> None:
@@ -277,3 +291,62 @@ def test_lint_catches_obvious_advice(text: str) -> None:
 @pytest.mark.parametrize("text", ["Share buyback programme announced.", "The company sells software.", "Buyers of the product churn.", "Holding company structure."])
 def test_lint_ignores_innocent_text(text: str) -> None:
     assert lint_advice_language(text) == []
+
+
+# ---------------- the ruling gate ----------------
+
+from council.errors import ClaimRuleError  # noqa: E402
+from council.report.gate import flag_reasons, flagged_claims, unresolved_claims  # noqa: E402
+
+
+def test_draft_banner_counts_unresolved_claims_and_says_they_are_not_conclusions() -> None:
+    md = render(FULL)
+    assert "DRAFT: 3 flagged claim(s) await the human's ruling (C-B3, C-X1, C-X3)" in md.split("## 1.")[0]
+    assert "not conclusions" in md.split("## 1.")[0] and "cannot be finalised" in md
+
+
+def test_final_render_refuses_while_flagged_claims_are_unresolved() -> None:
+    with pytest.raises(ClaimRuleError, match="3 flagged claim") as exc:
+        render(FULL, final=True)
+    for code in ("C-B3", "C-X1", "C-X3"):
+        assert code in str(exc.value)
+    assert "needs_evidence' is not a resolution" in str(exc.value)
+
+
+def test_final_render_succeeds_once_every_flagged_claim_is_accepted_or_rejected() -> None:
+    resolved = replace(FULL, claims=tuple(
+        replace(c, human_ruling="reject" if c.code in ("C-B3", "C-X3") else "accept") if c.code in ("C-B3", "C-X1", "C-X3") else c
+        for c in FULL.claims))
+    assert unresolved_claims(resolved.claims, resolved.evidence, resolved.challenges) == []
+    md = render(resolved, final=True)
+    assert "**FINAL.**" in md and "DRAFT" not in md.split("## 1.")[0]
+    assert "UNRESOLVED" not in md
+
+
+def test_needs_evidence_is_not_a_resolution() -> None:
+    (x1,) = [f for f in unresolved_claims(FULL.claims, FULL.evidence, FULL.challenges) if f.claim.code == "C-X1"]
+    assert x1.claim.human_ruling == "needs_evidence" and not x1.resolved
+
+
+def test_flag_reasons() -> None:
+    by_code = {e.code: e for e in FULL.evidence}
+    ch = FULL.challenges
+    plain = claim("C-B9", "bull", "FACT", "x", ev=("E-1",))
+    assert flag_reasons(plain, by_code, []) == []  # verified, unflagged, unchallenged: no ruling needed
+    assert flag_reasons(claim("C-B9", "bull", "GAP", "x"), by_code, ch) == []  # a gap is never flagged
+    assert flag_reasons(claim("C-B9", "bull", "UNVERIFIED", "x"), by_code, []) == ["UNVERIFIED: no verified evidence"]
+    assert any("CONFLICT" in r for r in flag_reasons(claim("C-B9", "bull", "FACT", "x", ev=("E-2",)), by_code, []))
+    assert any("STALE" in r for r in flag_reasons(claim("C-B9", "bull", "FACT", "x", ev=("E-4",)), by_code, []))
+    assert any("verification is FAILED" in r for r in flag_reasons(claim("C-B9", "bull", "FACT", "x", ev=("E-3",)), by_code, []))
+    disputed = [ChallengeRow("bear", "C-B9", "disputes", "r", "a", ())]
+    assert flag_reasons(plain, by_code, disputed) == ["challenged by the bear (disputes)"]
+    for stance in ("agrees", "partly_agrees"):  # agreement does not flag
+        assert flag_reasons(plain, by_code, [ChallengeRow("bear", "C-B9", stance, "r", "a", ())]) == []
+    assert flag_reasons(plain, by_code, [ChallengeRow("bear", "C-B9", "needs_evidence", "r", "a", ())])
+    downgraded = claim("C-B9", "bull", "UNVERIFIED", "x", downgraded=True)
+    assert "downgraded from FACT" in flag_reasons(downgraded, by_code, [])[0]
+
+
+def test_resolved_flagged_claims_remain_listed_as_flagged_for_the_record() -> None:
+    flagged = {f.claim.code: f for f in flagged_claims(FULL.claims, FULL.evidence, FULL.challenges)}
+    assert flagged["C-B1"].resolved and flagged["C-X2"].resolved and not flagged["C-B3"].resolved

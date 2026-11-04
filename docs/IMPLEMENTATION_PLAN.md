@@ -12,7 +12,7 @@ Solo schedule; two agents; no Analyst agent and no workflow engine; Day-1/2 test
 ## 0. Status on Nov 3 2026 (before kickoff)
 
 The deterministic foundation was built before the event, as permitted: it contains no Switch room, no
-Switch-connected agent configuration and no agent prompts. 197 tests pass (176 need no database, 21 run against
+Switch-connected agent configuration and no agent prompts. 217 tests pass (185 need no database, 32 run against
 MySQL 8.0.46).
 
 | Planned item | Status |
@@ -24,7 +24,8 @@ MySQL 8.0.46).
 | Evidence library: verification, claim typing, `GAP`, `STALE`, `CONFLICT`, human rulings | **Done** (library plus `council human rule`) |
 | Dossier renderer and advice-language lint (`council human report`) | **Done** |
 | One fresh-clone reproduction of the README setup (install, Compose, `council db init`, ingest, report, tests) | **Done** once, before kickoff |
-| Switch room and agents, instructions, T1 to T10, `council agent …`, `advance` / `status` / `finalize`, the frozen EDGAR dataset, reset and health-check scripts, demo video, submission | **Pending** |
+| `council-agent` commands, stage validation, `council human status` / `advance` / `finalize`, the ruling gate, agent directory generator, instruction texts and `switch/SETUP.md` (Phase 2, Nov 4) | **Done**, tested end to end with scripted agents (no LLM) |
+| Switch Console installed and connected, the room, live agents, T1 to T10, the frozen EDGAR dataset and T11, reset and health-check scripts, demo video, submission | **Pending**. Blocker: Switch Console is not installed on the development machine; see `switch/SETUP.md` |
 
 ## 1. Priorities
 
@@ -94,14 +95,14 @@ Record all outcomes in `docs/TEST_RESULTS.md` (not created yet) and update the U
 ### Day 2 — Nov 5: EDGAR data, evidence ledger, stage checks
 1. **EDGAR dataset (T11).** Select 3–5 US-listed companies: selection criteria — financial statements with standard XBRL concepts available, at least one company sharing a sector label with the sample portfolio, one with a restatement or differing values for a period if available (to demonstrate `CONFLICT`), and one with a metric missing (to demonstrate `GAP`); if none occurs naturally, demonstrate flags with a clearly labelled test fixture. Fetch snapshots with `council human data fetch --cik N` (implemented) using a declared User-Agent (`COUNCIL_SEC_USER_AGENT`, your own contact; default 5 requests/second, never above 10; no crawling), then `council human data manifest` (URL, CIK, retrieval timestamps, SHA-256 per document; forms, accession numbers, fiscal periods and filing dates are in the facts and the evidence rows). The cache under `data/edgar/` is git-ignored by default: add the chosen dataset deliberately with `git add -f` once its SEC reuse terms are checked.
 2. **Done before kickoff (library):** curated metric map (candidate XBRL concepts per metric; absent → `GAP`); evidence record and verify; claim typing/downgrade; STALE (from `config/freshness.yaml`, labelled heuristics) and CONFLICT. Concept coverage per real company is unverified until T11.
-3. Pending: `submit`, `brief show --other`, `challenge add`, `final add`, stage checks, `advance`, `status`. Done before kickoff: `rule`, and DB grants applied and tested (the agent account cannot select from `portfolios`, `holdings` or `dossiers`).
+3. **Done (Nov 4):** `submit`, `brief show --other`, `challenge add`, `final`, stage checks, `advance`, `status`, `finalize`, `rule`, and DB grants applied and tested (the agent account cannot select from `portfolios`, `holdings` or `dossiers`).
 
-**Done when:** unit tests cover typing rules, downgrade, STALE/CONFLICT/GAP (already true), stage refusals (pending) and grants (already true); both agents can file evidence/claims through the real CLI from their directories (pending).
+**Done when:** unit tests cover typing rules, downgrade, STALE/CONFLICT/GAP (already true), stage refusals and grants (already true); both agents can file evidence/claims through the real CLI from their directories (true for scripted agents; pending for live ones).
 
 ### Day 3 — Nov 6: full run, instructions, dossier (FEATURE FREEZE at day end)
 1. Write Room Instructions and Agent instructions v2 (AGENT_DESIGN §10) from the repo files in `switch/`; apply T2/T3/T4 outcomes.
 2. Run the full journey: Step 0 → Stage 1 → Stage 2 → rulings → Stage 3 → dossier. Iterate on prompts until each stage completes without developer intervention.
-3. `council human report` and the advice-language lint are implemented; `finalize` is pending; post the dossier to the room.
+3. `council human report`, `finalize` (the ruling gate) and the advice-language lint are implemented; post the dossier to the room.
 4. Measure parallel vs sequential; apply the Bull/Bear collapse criterion (AGENT_DESIGN §9).
 5. Three consecutive clean runs from a reset (today: `docker compose down -v` then `council db init`; a `scripts/reset` is pending; once parallel, once sequential).
 6. P1 only if time remains.
@@ -124,9 +125,9 @@ Record all outcomes in `docs/TEST_RESULTS.md` (not created yet) and update the U
 | M2 Portfolio math | Unit tests green on hand-computed numbers; CSV errors are clear; sanitised summary contains only agreed fields | **Done** |
 | M3 EDGAR dataset | 3–5 companies with a manifest (added deliberately with `git add -f`); every source row has URL, retrieved_at and sha256, and every evidence row has fiscal period, filing date and accession; no invented values | Adapter **done**; dataset and T11 pending |
 | M4 Ledger | `FACT` requires verified evidence; downgrade, STALE, CONFLICT, GAP each tested | **Done** (library) |
-| M5 Stage checks and grants | CLI refuses out-of-stage actions and `brief show --other` at stage 1; agent DB user cannot read portfolio tables | Grants **done and tested**; stage checks pending |
+| M5 Stage checks and grants | CLI refuses out-of-stage actions and `brief show --other` at stage 1; agent DB user cannot read portfolio tables | **Done and tested** against a real server |
 | M6 Agents live | One full journey in the room (parallel or sequential) without developer intervention | Pending |
-| M7 Dossier | Deterministic; passes advice-language lint; shows rulings, gaps, flags, FROZEN_SNAPSHOT banner | Renderer **done**; agent sections and `finalize` pending |
+| M7 Dossier | Deterministic; passes advice-language lint; shows rulings, gaps, flags, FROZEN_SNAPSHOT banner | Renderer, gate and `finalize` **done**; live agent content pending |
 | M8 Reproducibility | Fresh clone works in ≤ 30 min | Setup verified once; repeat after the Switch parts exist |
 | M9 Demo | Video and submission complete | Pending |
 

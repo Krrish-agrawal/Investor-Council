@@ -16,6 +16,11 @@ dist/
 *.pem
 *.key
 
+# Agent working directories: generated settings and wrapper (the wrapper has a machine-specific path)
+agents/*/.council.env
+agents/*/council-agent
+agents/*/CLAUDE.md
+
 # Portfolios: any CSV is presumed to be private, except the bundled synthetic sample
 *.csv
 !samples/portfolio.csv

@@ -2,7 +2,7 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026).** Tags as in ARCHITECTURE.md. Nothing essential depends on an UNVERIFIED item.
 
-**Implementation status:** this document is the approved design. The deterministic parts it relies on are built and tested: the typing rules and evidence verification (`council/evidence/`), the sanitised summary, the dossier renderer and the `council human` commands. The agents themselves, their instructions, the `council agent` commands and the stage controls are **pending** and are built after kickoff. Sections that describe pending pieces say so.
+**Implementation status:** this document is the approved design and the tooling is built: the typing rules and evidence verification (`council/evidence/`), the agent commands and stage validation (`council/agent/`, run as `./council-agent` or `council agent`), the stage controls and ruling gate (`council/stages.py`, `council/report/gate.py`), the sanitised summary, the dossier renderer and the instruction texts (`switch/`). What is **pending** is running it live: Switch Console connected, the room, the two registered agents and the Day-1 tests (T1 to T10).
 
 Agents: `bull-researcher`, `bear-researcher` — provider Claude Code, run location "This computer", same Switch owner (the human), Auto mode on, Bypass off [Docs: agent-settings]. Room aliases `@bull`, `@bear` via `!set-alias` [Docs: create-a-room]. Names are immutable once created [Docs: onboard-your-agents], so they are fixed here.
 
@@ -22,7 +22,7 @@ Two LLM agents; portfolio analysis is Python; three human-initiated stages; huma
 | **Flag** | `STALE` · `CONFLICT` — set by tools. `GAP` is a claim type. |
 | **Ruling** | Human decision on a flagged claim: `accept` · `reject` · `needs_evidence`. |
 
-Typing rules (implemented in `add_claim`, `council/evidence/service.py`; the pending `council agent claim add` will call it):
+Typing rules (implemented in `add_claim`, `council/evidence/service.py`; `council-agent claim add` calls it):
 - `FACT` — needs at least one evidence reference. With none, the claim is rejected (the agent must file `ASSUMPTION` or `UNVERIFIED`). If evidence is cited but none of it is `VERIFIED`, the claim is stored as `UNVERIFIED` with `downgraded = true`; it is never kept as a `FACT`.
 - `ASSUMPTION` — an inference or forecast; requires `basis` (claim/evidence codes) and a `falsifier`.
 - `UNVERIFIED` — plausible but no verified evidence; reported separately, never under "agreed facts".
@@ -30,7 +30,7 @@ Typing rules (implemented in `add_claim`, `council/evidence/service.py`; the pen
 
 ## 2. Inputs every agent gets (and does not get)
 
-From `council agent next S-0001 --as bull|bear` (pending) and the human's stage message:
+From `./council-agent next S-0001` (the role comes from the agent directory's `.council.env`, not from an argument) and the human's stage message:
 - the **sanitised portfolio summary** (implemented: `target_ticker`, `target_held`, `target_weight_pct`, `target_sector`, `overlap_count`, `holdings_count`, the five largest sector weights, `top1_pct`/`top3_pct`/`top5_pct`, `hhi`, `effective_holdings`, `unclassified_pct`, `price_as_of`, `price_source`, `portfolio_partial`; percentages rounded to one decimal);
 - ticker, thesis, session id, current stage, allowed commands;
 - the index of frozen data for the target (and any peers in the dataset);
@@ -70,7 +70,7 @@ Never: the CSV, share counts, position values, cost basis, other tickers (defaul
 
 Triggered by the human's message tagging both agents. Each agent:
 1. `council agent brief show --other` (refused at stage 1).
-2. For the opponent's **top 3 claims** (by `rank_in_brief`) files a response via `council agent challenge add`:
+2. For up to **three** of the opponent's claims (any non-GAP claim; `--rank` on `claim add` marks each researcher's most important claims) files a response via `council agent challenge add`:
 ```json
 {
   "session": "S-0001", "from": "bear", "target_claim": "C-B1", "stage": 2,
@@ -148,7 +148,9 @@ The **dossier** is rendered by Python from the ledger (`council human report`, i
 
 What separation costs: two Claude sessions' usage, session-start latency, and the need for the human to start each stage — accepted deliberately.
 
-## 10. Agent instructions (v2 drafts; final text written on Day 3 after tests)
+## 10. Agent instructions
+
+**The authoritative texts live in `switch/`:** `room-instructions.md` (paste into the room's Instructions), `agent-manual.md` (the real commands and rules), `role-bull.md` and `role-bear.md`. `council human agents init` composes each agent's `CLAUDE.md` from the role text plus the manual, and the same text is pasted into the Agent instructions field (the fallback if `CLAUDE.md` is not loaded, test T2). The drafts below are kept for design context and are shorter than the real manual.
 
 ### 10.1 Room Instructions
 ```
@@ -209,25 +211,38 @@ Placement: Agent instructions field is sent every session [Docs: agent-settings]
 Library functions with no CLI yet (the agent commands will wrap them): `record_fact_evidence`,
 `record_metric_evidence`, `add_claim` and `rule_claim` in `council/evidence/service.py`.
 
-### Pending: `council agent …` (design sketch; exact flags fixed after kickoff)
+### Implemented: `council-agent` (also `council agent …`), the research agents' commands
 
-Restricted DB account, config from a git-ignored file in the agent directory.
+Run from the agent's own directory as `./council-agent …` (a wrapper generated by `council human agents init`). Settings
+come only from that directory's `.council.env`; the role (`COUNCIL_AGENT_ROLE`) is never an argument, so an agent cannot
+impersonate the other one. All output is JSON on stdout; errors go to stderr with exit code 1.
 
 | Command | Purpose / check |
 |---|---|
-| `next S --as ROLE` | Stage, task, sanitised summary, data index, rulings (stage 3) |
-| `data list TICKER` / `data show SOURCE_KEY [--concept C]` | Read frozen sources with provenance |
-| `evidence add S --as ROLE --source KEY (--concept C --period P \| --quote T)` | Creates and auto-verifies evidence; applies STALE/CONFLICT flags (wraps `record_fact_evidence`) |
-| `claim add S --as ROLE --type T --text … [--evidence …] [--basis …] [--falsifier …]` | Typing rules; only at the current stage (wraps `add_claim`) |
-| `submit S --as ROLE --stage N` | Records submission (once per stage) |
-| `brief show S --other --as ROLE` | Refused when stage < 2 |
-| `challenge add S --as ROLE --file response.json` | Only at stage 2; max top-3 targets; schema-validated |
-| `final add S --as ROLE --file position.json` | Only at stage 3 |
+| `next S` | Stage, task, sanitised summary, data index, allowed commands, your progress; at stage 3 also the challenges against you and the human's rulings |
+| `data list S` / `data show --cik C` | Snapshots in the dataset (and whether the human registered them); curated metrics with provenance |
+| `evidence add S --metric M [--basis annual\|quarterly]` | Verified evidence from the snapshot, or an automatic `GAP` claim if the metric is absent |
+| `evidence add S --concept C --unit U --period-end D [--period-start D] [--value V]` | A specific fact; a claimed `--value` that does not match is stored as `FAILED` |
+| `evidence list S` / `claim list S` | Your own work only (the other's is hidden until stage 2) |
+| `claim add S --type T --text … [--evidence E-1]… [--basis X]… [--falsifier …] [--rank N]` | Typing rules; stages 1 and 2; you can cite only your own evidence |
+| `submit S --summary …` | Close stages 1 or 2 (needs a claim, or a challenge in stage 2; at most 150 words); frozen afterwards |
+| `brief show S --other` | The other researcher's stage-1 brief with evidence details; stage 2 onward and only after you filed yours |
+| `challenge add S --target C --stance … --restated … --argument … [--counter-evidence E-n]…` | Stage 2; at most three; not your own claim; not a `GAP`; `disputes` without counter-evidence becomes `needs_evidence` |
+| `final S --json '{…}'` / `--file F` | Stage 3 final position: `concessions`, `still_holds` (your claims, each with a reason), `could_not_establish` |
+| `whoami` | Role and account of this directory (no secrets) |
 
-### Pending: stage control for the human
+### Implemented: `council db …` and `council human …` (run in a terminal)
 
 | Command | Purpose |
 |---|---|
-| `council human status S [--disputes]` | Submissions per agent and stage; flagged items needing rulings |
-| `council human advance S --to N [--force]` | Move the stage; normally needs both agents' submissions |
-| `council human finalize S --note …` | Store the human's note and mark the dossier `FINAL` |
+| `council db init` / `db status` | Create the database, migrations, accounts; show state |
+| `council human ingest --file F [--name N] [--price-as-of D] [--sample] [--allow-partial]` | Validate the CSV locally and store it |
+| `council human summary [--shared --target T [--target-sector S]] [--json]` | Local detail, or the sanitised summary for the room |
+| `council human session new --ticker T --thesis … [--cik C] [--target-sector S] [--session-date D]` / `session show` | Open a session (registers the target's cached snapshot as a source) |
+| `council human data fetch --cik N [--refresh]` / `register --cik N` / `inspect --cik N` / `manifest` | Cache EDGAR documents; make a snapshot citable by agents; describe offline; manifest |
+| `council human agents init [--dir D] [--force]` | Generate the agent directories: restricted `.council.env`, wrapper, `CLAUDE.md` |
+| `council human status [S]` | Submissions per agent and stage, claims, challenges, unresolved flagged claims with reasons, next step |
+| `council human advance S --to N [--force]` | Move to the next stage; normally needs both agents' submissions |
+| `council human rule S CLAIM accept\|reject\|needs_evidence [--note …]` | Record a ruling (only `accept`/`reject` resolve a flagged claim) |
+| `council human report [--session S] [--local-detail] [--note …] [--save] [--strict] [-o F]` | Render a DRAFT dossier (sanitised by default) |
+| `council human finalize S --note … [-o F] [--force-missing-final]` | The final gate: stage 3, a human note, both final positions, **no unresolved flagged claim**; stores the FINAL dossier and closes the session |

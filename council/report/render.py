@@ -14,6 +14,8 @@ from decimal import Decimal
 from council.evidence.freshness import LABEL as HEURISTICS_LABEL
 from council.evidence.service import ClaimRecord, EvidenceRecord
 from council.portfolio.metrics import UNCLASSIFIED, quantize
+from council.errors import ClaimRuleError
+from council.report.gate import RESOLVING_RULINGS, assert_ready_to_finalize, flagged_claims, unresolved_claims
 from council.report.model import DossierData
 
 TEMPLATE_VERSION = "1"
@@ -61,8 +63,15 @@ def _fiscal(e: EvidenceRecord) -> str:
     return f"{text} (as reported on the filing)" if text else "not reported"
 
 
-def render_dossier(data: DossierData, *, generated_at: datetime, include_local_detail: bool = False) -> str:
-    """Render the dossier. ``include_local_detail`` adds position-level data and must stay local."""
+def render_dossier(data: DossierData, *, generated_at: datetime, include_local_detail: bool = False, final: bool = False) -> str:
+    """Render the dossier. ``include_local_detail`` adds position-level data and must stay local.
+
+    ``final=True`` is the gate: it raises :class:`ClaimRuleError` if any flagged claim lacks an accept/reject
+    ruling. Without it the dossier is a DRAFT and says so, listing every unresolved claim.
+    """
+    open_items = unresolved_claims(data.claims, data.evidence, data.challenges)
+    if final:
+        assert_ready_to_finalize(open_items)
     out: list[str] = []
     add = out.append
     session = data.session
@@ -72,6 +81,13 @@ def render_dossier(data: DossierData, *, generated_at: datetime, include_local_d
     add("")
     add(_DISCLAIMER)
     add("")
+    if final:
+        add("> **FINAL.** Every flagged claim has an accept or reject ruling from the human.")
+        add("")
+    elif open_items:
+        add(f"> **DRAFT: {len(open_items)} flagged claim(s) await the human's ruling ({', '.join(u.claim.code for u in open_items)}).** "
+            "They appear under UNRESOLVED and are not conclusions. This dossier cannot be finalised until each is accepted or rejected.")
+        add("")
     if data.evidence:
         retrieved = sorted({e.source_retrieved_at for e in data.evidence})
         span = retrieved[0].date().isoformat() if len(retrieved) == 1 else f"{retrieved[0].date()} to {retrieved[-1].date()}"
@@ -101,6 +117,7 @@ def render_dossier(data: DossierData, *, generated_at: datetime, include_local_d
         add(f"## {number}. {title}")
         add("")
         out.extend(_argument_section(data, agent, evidence_by_code))
+        out.extend(_submission_blocks(data, agent))
     if data.challenges:
         add("### Challenge round")
         add("")
@@ -224,7 +241,20 @@ def _evidence_refs(claim: ClaimRecord, by_code: dict[str, EvidenceRecord]) -> st
     return ", ".join(parts) if parts else "none"
 
 
+def _claim_lines(c: ClaimRecord, by_code: dict[str, EvidenceRecord], *, label: str, reasons: tuple[str, ...] = ()) -> list[str]:
+    lines = [f"- **{c.code}** ({c.claim_type}; {label}): {_cell(c.text)}", f"  - Evidence: {_evidence_refs(c, by_code)}"]
+    if c.claim_type == "ASSUMPTION":
+        lines.append(f"  - Basis: {', '.join(map(str, c.basis or []))}. Would be wrong if: {_cell(c.falsifier or '')}")
+    if reasons:
+        lines.append(f"  - Why it needs a ruling: {'; '.join(reasons)}")
+    if c.human_note:
+        lines.append(f"  - Human's note: {_cell(c.human_note)}")
+    return lines
+
+
 def _argument_section(data: DossierData, agent: str, by_code: dict[str, EvidenceRecord]) -> list[str]:
+    """Claims are partitioned so a flagged claim can never be read as an approved conclusion:
+    unflagged claims; flagged claims the human accepted; UNRESOLVED flagged claims; rejected claims."""
     claims = [c for c in data.claims if c.agent == agent and c.claim_type != "GAP"]
     if not claims:
         return [
@@ -232,26 +262,31 @@ def _argument_section(data: DossierData, agent: str, by_code: dict[str, Evidence
             "this is recorded under Missing information._",
             "",
         ]
-    out: list[str] = []
+    reasons = {f.claim.code: f.reasons for f in flagged_claims(data.claims, data.evidence, data.challenges)}
     rejected = [c for c in claims if c.human_ruling == "reject"]
-    live = [c for c in claims if c.human_ruling != "reject"]
-    groups = (
-        ("FACT", "Supported by verified evidence (FACT)"),
-        ("ASSUMPTION", "Assumptions (inferences, with what would prove them wrong)"),
-        ("UNVERIFIED", "Unverified (not presented as fact)"),
-    )
-    for ctype, heading in groups:
-        subset = [c for c in live if c.claim_type == ctype]
-        if not subset:
-            continue
-        out += [f"### {heading}", ""]
-        for c in subset:
-            out.append(f"- **{c.code}** ({_RULING_LABEL[c.human_ruling]}): {_cell(c.text)}")
-            out.append(f"  - Evidence: {_evidence_refs(c, by_code)}")
-            if c.claim_type == "ASSUMPTION":
-                out.append(f"  - Basis: {', '.join(map(str, c.basis or []))}. Would be wrong if: {_cell(c.falsifier or '')}")
-            if c.downgraded:
-                out.append("  - Downgraded from FACT: the cited evidence did not verify.")
+    accepted = [c for c in claims if c.human_ruling == "accept" and c.code in reasons]
+    unresolved = [c for c in claims if c.code in reasons and c.human_ruling not in RESOLVING_RULINGS]
+    clear = [c for c in claims if c.code not in reasons and c.human_ruling != "reject"]
+
+    out: list[str] = []
+    for ctype, heading in (("FACT", "Supported by verified evidence (FACT); no flag raised"),
+                           ("ASSUMPTION", "Assumptions (inferences, with what would prove them wrong); no flag raised")):
+        subset = [c for c in clear if c.claim_type == ctype]
+        if subset:
+            out += [f"### {heading}", ""]
+            for c in subset:
+                out += _claim_lines(c, by_code, label="no flag raised" if c.human_ruling is None else "accepted by the human")
+            out.append("")
+    if accepted:
+        out += ["### Flagged, then accepted by the human", ""]
+        for c in accepted:
+            out += _claim_lines(c, by_code, label="accepted by the human after review", reasons=reasons[c.code])
+        out.append("")
+    if unresolved:
+        out += ["### UNRESOLVED: awaiting the human's ruling (these are not conclusions)", ""]
+        for c in unresolved:
+            state = "human asked for more evidence" if c.human_ruling == "needs_evidence" else "not yet ruled"
+            out += _claim_lines(c, by_code, label=f"UNRESOLVED, {state}", reasons=reasons[c.code])
         out.append("")
     if rejected:
         out += ["### Rejected by the human", ""]
@@ -259,6 +294,25 @@ def _argument_section(data: DossierData, agent: str, by_code: dict[str, Evidence
             note = f" Note: {_cell(c.human_note)}" if c.human_note else ""
             out.append(f"- **{c.code}** ({c.claim_type}): {_cell(c.text)}{note}")
         out.append("")
+    return out
+
+
+def _submission_blocks(data: DossierData, agent: str) -> list[str]:
+    """The researcher's own words: the stage-1 brief, challenge-round summary and final position."""
+    out: list[str] = []
+    mine = [x for x in data.submissions if x.agent == agent]
+    names = {1: "Brief (stage 1)", 2: "Challenge-round summary (stage 2)", 3: "Final position (stage 3)"}
+    for sub in mine:
+        out += [f"### {names.get(sub.stage, f'Stage {sub.stage}')}", ""]
+        if sub.summary:
+            out += [_cell(sub.summary), ""]
+        if sub.stage == 3:
+            if sub.concessions:
+                out += ["Concessions:"] + [f"- **{x['claim']}**: {_cell(x['reason'])}" for x in sub.concessions] + [""]
+            if sub.still_holds:
+                out += ["Still holds:"] + [f"- **{x['claim']}**: {_cell(x['reason'])}" for x in sub.still_holds] + [""]
+            if sub.could_not_establish:
+                out += ["Could not establish:"] + [f"- {_cell(x)}" for x in sub.could_not_establish] + [""]
     return out
 
 
@@ -277,9 +331,10 @@ def _missing_section(data: DossierData, by_code: dict[str, EvidenceRecord]) -> l
     for c in data.claims:
         if c.human_ruling == "needs_evidence":
             items.append(f"- **{c.code}**: the human asked for more evidence before relying on this claim.")
-    unruled = [c.code for c in data.claims if c.human_ruling is None and c.claim_type in ("UNVERIFIED", "ASSUMPTION")]
-    if unruled:
-        items.append(f"- Awaiting a human ruling: {', '.join(unruled)}.")
+    open_items = unresolved_claims(data.claims, data.evidence, data.challenges)
+    if open_items:
+        items.append(f"- **Unresolved flagged claims (no accept/reject ruling yet): {', '.join(u.claim.code for u in open_items)}.** "
+                     "They are shown under UNRESOLVED above and are not conclusions.")
     if data.session and not data.claims:
         items.append("- No claims have been filed yet, so there are no positive or negative arguments to show.")
     if not data.session:
