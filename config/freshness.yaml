@@ -1,0 +1,10 @@
+# Freshness thresholds for frozen EDGAR financial-statement data.
+#
+# APPLICATION HEURISTICS -- not accounting, legal or regulatory standards.
+# They only decide when the application flags a figure as STALE for the human's attention.
+# Ages are measured in days:
+#   * annual / quarterly: from the fact's period end date to the research session date;
+#   * snapshot: from the snapshot retrieval date to the research session date.
+annual_max_age_days: 456       # about 15 months
+quarterly_max_age_days: 183    # about 6 months
+snapshot_max_age_days: 30

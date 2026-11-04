@@ -1,0 +1,311 @@
+"""``council human ...``: commands the human runs locally in a terminal.
+
+Everything that touches the raw portfolio lives here. None of these commands posts anything to a
+Switch room; the human decides what, if anything, to paste (the sanitised summary).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+from sqlalchemy import text
+
+from council import config
+from council.cli.common import cli_errors, echo_err, format_table, parse_iso_date
+from council.db.engine import make_engine, transaction
+from council.edgar.client import EdgarClient, read_cached_document
+from council.edgar.facts import CompanyFactsSnapshot, identify_fiscal_periods
+from council.edgar.manifest import write_manifest
+from council.edgar.models import normalize_cik
+from council.edgar.validate import parse_submissions
+from council.errors import CouncilError, NotFoundError
+from council.evidence.freshness import load_freshness_config
+from council.evidence.service import rule_claim
+from council.portfolio.csv_ingest import parse_portfolio_csv_file
+from council.portfolio.metrics import compute_metrics
+from council.portfolio.repository import latest_portfolio_id, load_holdings, load_portfolio, save_portfolio
+from council.portfolio.summary import build_local_summary, build_shared_summary
+from council.report.lint import lint_advice_language
+from council.report.model import load_dossier_data
+from council.report.render import TEMPLATE_VERSION, render_dossier
+from council.sessions import create_session, get_session, latest_session
+
+log = logging.getLogger(__name__)
+
+human_app = typer.Typer(help="Local, human-run commands (portfolio, sessions, rulings, dossier).", no_args_is_help=True)
+session_app = typer.Typer(help="Research sessions.", no_args_is_help=True)
+data_app = typer.Typer(help="Frozen SEC EDGAR data.", no_args_is_help=True)
+human_app.add_typer(session_app, name="session")
+human_app.add_typer(data_app, name="data")
+
+PortfolioOpt = Annotated[Optional[int], typer.Option("--portfolio-id", help="Defaults to the most recent portfolio.")]
+
+
+def _portfolio_id(conn, explicit: int | None) -> int:
+    pid = explicit if explicit is not None else latest_portfolio_id(conn)
+    if pid is None:
+        raise NotFoundError("No portfolio ingested yet. Run: council human ingest --file samples/portfolio.csv")
+    return pid
+
+
+# ---------------------------------------------------------------------------------------------
+# ingest / summary
+# ---------------------------------------------------------------------------------------------
+
+
+@human_app.command("ingest")
+@cli_errors
+def ingest(
+    file: Annotated[Path, typer.Option("--file", "-f", help="Portfolio CSV: ticker, shares, price[, sector].")],
+    name: Annotated[Optional[str], typer.Option("--name", help="Label for this portfolio (default: file name).")] = None,
+    price_as_of: Annotated[Optional[str], typer.Option("--price-as-of", help="Date of the prices in the CSV (YYYY-MM-DD).")] = None,
+    sample: Annotated[bool, typer.Option("--sample", help="Mark as the bundled synthetic sample.")] = False,
+    allow_partial: Annotated[bool, typer.Option("--allow-partial", help="Store valid rows even if some rows are invalid (weights will describe a subset).")] = False,
+) -> None:
+    """Validate a portfolio CSV locally and store it in MySQL. The file is read, never copied or uploaded."""
+    report = parse_portfolio_csv_file(file)
+    for warning in report.warnings:
+        echo_err(f"warning (line {warning.line}): {warning.message}")
+    for issue in report.errors:
+        echo_err(f"invalid (line {issue.line}): {issue.message}")
+    if report.errors and not allow_partial:
+        echo_err(f"{report.invalid_row_count} invalid row(s); nothing was stored. Fix the file or use --allow-partial.")
+        raise typer.Exit(1)
+    asof = parse_iso_date(price_as_of, "--price-as-of")
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        record, created = save_portfolio(
+            conn, report, name=name or file.stem, origin="sample" if sample else "user",
+            price_as_of=asof, allow_partial=allow_partial,
+        )
+    verb = "Stored" if created else "Already stored (identical file)"
+    typer.echo(f"{verb}: portfolio id={record.id} name={record.name!r} holdings={len(report.holdings)} sha256={record.csv_sha256[:12]}...")
+    if record.excluded_rows:
+        typer.echo(f"WARNING: {record.excluded_rows} invalid row(s) excluded; weights describe only the valid rows.")
+    typer.echo("The CSV stays on this machine. Share only `council human summary --shared` output, if anything.")
+
+
+@human_app.command("summary")
+@cli_errors
+def summary(
+    portfolio_id: PortfolioOpt = None,
+    shared: Annotated[bool, typer.Option("--shared", help="Print the sanitised summary that is safe to paste into a shared room.")] = False,
+    target: Annotated[Optional[str], typer.Option("--target", help="Research target ticker (used with --shared).")] = None,
+    target_sector: Annotated[Optional[str], typer.Option("--target-sector", help="Sector label of the target, if not held.")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """Portfolio weights, sector allocation and concentration. Local detail by default."""
+    engine = make_engine("human")
+    with engine.connect() as conn:
+        pid = _portfolio_id(conn, portfolio_id)
+        record = load_portfolio(conn, pid)
+        metrics = compute_metrics(load_holdings(conn, pid))
+    if shared:
+        data = build_shared_summary(metrics, target_ticker=target, target_sector=target_sector,
+                                    price_as_of=record.price_as_of, excluded_rows=record.excluded_rows)
+        typer.echo(json.dumps(data, indent=2))
+        return
+    data = build_local_summary(metrics, price_as_of=record.price_as_of)
+    if as_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+    typer.echo(f"Portfolio {record.id} ({record.name}) | holdings={data['holdings_count']} | total value={data['total_value']} | prices as of {data['price_as_of'] or 'unknown'} (user-supplied)")
+    if record.excluded_rows:
+        typer.echo(f"WARNING: partial portfolio, {record.excluded_rows} invalid row(s) excluded.")
+    typer.echo("\nPositions (LOCAL ONLY)")
+    typer.echo(format_table(["Ticker", "Sector", "Shares", "Price", "Value", "Weight%"],
+                            [[p["ticker"], p["sector"], p["shares"], p["price"], p["market_value"], p["weight_pct"]] for p in data["positions"]],
+                            right=(2, 3, 4, 5)))
+    typer.echo("\nSector allocation")
+    typer.echo(format_table(["Sector", "Weight%", "Holdings"], [[s["sector"], s["weight_pct"], s["holdings"]] for s in data["sectors"]], right=(1, 2)))
+    c = data["concentration"]
+    typer.echo("\nConcentration")
+    typer.echo(f"  top1={c['top1_pct']}%  top3={c['top3_pct']}%  top5={c['top5_pct']}%  HHI={c['hhi']}  effective holdings={c['effective_holdings']}  sector HHI={c['sector_hhi']}")
+
+
+# ---------------------------------------------------------------------------------------------
+# sessions
+# ---------------------------------------------------------------------------------------------
+
+
+@session_app.command("new")
+@cli_errors
+def session_new(
+    ticker: Annotated[str, typer.Option("--ticker", help="Research target ticker.")],
+    thesis: Annotated[str, typer.Option("--thesis", help="Your thesis or question, in your own words.")],
+    portfolio_id: PortfolioOpt = None,
+    target_sector: Annotated[Optional[str], typer.Option("--target-sector", help="Sector label of the target (for overlap), if it is not held.")] = None,
+    cik: Annotated[Optional[str], typer.Option("--cik", help="Target's SEC CIK, if known.")] = None,
+    session_date: Annotated[Optional[str], typer.Option("--session-date", help="Defaults to today (UTC).")] = None,
+) -> None:
+    """Open a research session and print the sanitised summary to paste into the room."""
+    freshness = load_freshness_config(config.freshness_config_path())
+    sdate = parse_iso_date(session_date, "--session-date") or datetime.now(timezone.utc).date()
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        pid = _portfolio_id(conn, portfolio_id)
+        record = load_portfolio(conn, pid)
+        metrics = compute_metrics(load_holdings(conn, pid))
+        shared = build_shared_summary(metrics, target_ticker=ticker, target_sector=target_sector,
+                                      price_as_of=record.price_as_of, excluded_rows=record.excluded_rows)
+        session = create_session(
+            conn, portfolio_id=pid, target_ticker=ticker, thesis=thesis, shared_summary=shared,
+            freshness_cfg=freshness.to_json(), session_date=sdate,
+            target_cik=normalize_cik(cik) if cik else None, target_sector=target_sector or shared.get("target_sector"),
+        )
+    typer.echo(f"Created session {session.code} (target {session.target_ticker}, stage {session.stage}).")
+    typer.echo("Sanitised summary (safe to paste into a shared room; contains no shares, values or other tickers):")
+    typer.echo(json.dumps(shared, indent=2))
+
+
+@session_app.command("show")
+@cli_errors
+def session_show(code: Annotated[Optional[str], typer.Argument(help="Session code, e.g. S-0001 (default: latest).")] = None) -> None:
+    """Show a session."""
+    engine = make_engine("human")
+    with engine.connect() as conn:
+        session = get_session(conn, code) if code else latest_session(conn)
+        if session is None:
+            raise NotFoundError("No sessions yet. Run: council human session new --ticker T --thesis '...'")
+    typer.echo(json.dumps({
+        "code": session.code, "target_ticker": session.target_ticker, "target_cik": session.target_cik,
+        "stage": session.stage, "status": session.status, "session_date": session.session_date.isoformat(),
+        "data_mode": session.data_mode, "thesis": session.thesis, "freshness": session.freshness_cfg,
+    }, indent=2))
+
+
+# ---------------------------------------------------------------------------------------------
+# rulings and report
+# ---------------------------------------------------------------------------------------------
+
+
+@human_app.command("rule")
+@cli_errors
+def rule(
+    session_code: Annotated[str, typer.Argument(help="Session code, e.g. S-0001.")],
+    claim_code: Annotated[str, typer.Argument(help="Claim code, e.g. C-B1.")],
+    ruling: Annotated[str, typer.Argument(help="accept | reject | needs_evidence")],
+    note: Annotated[Optional[str], typer.Option("--note", help="Your reason, in your own words.")] = None,
+) -> None:
+    """Record your ruling on a claim."""
+    if ruling not in ("accept", "reject", "needs_evidence"):
+        raise typer.BadParameter("ruling must be accept, reject or needs_evidence")
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        claim = rule_claim(conn, get_session(conn, session_code), claim_code, ruling, note)  # type: ignore[arg-type]
+    typer.echo(f"{claim.code}: ruling recorded as {claim.human_ruling}")
+
+
+@human_app.command("report")
+@cli_errors
+def report(
+    session: Annotated[Optional[str], typer.Option("--session", help="Session code (default: latest session; if none, portfolio-only).")] = None,
+    portfolio_id: PortfolioOpt = None,
+    output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Write to a file instead of stdout.")] = None,
+    local_detail: Annotated[bool, typer.Option("--local-detail", help="Include position-level data. LOCAL ONLY; never share.")] = False,
+    note: Annotated[Optional[str], typer.Option("--note", help="Your own decision note to include.")] = None,
+    save: Annotated[bool, typer.Option("--save", help="Store this dossier version in the database (not allowed with --local-detail).")] = False,
+    strict: Annotated[bool, typer.Option("--strict", help="Exit non-zero if advice-like language is found.")] = False,
+) -> None:
+    """Render the Markdown research dossier from the database (deterministic; no LLM involved)."""
+    if save and local_detail:
+        raise typer.BadParameter("--save cannot be combined with --local-detail")
+    engine = make_engine("human")
+    with transaction(engine) as conn:
+        sess = None
+        if session:
+            sess = get_session(conn, session)
+        elif portfolio_id is None:
+            sess = latest_session(conn)
+        pid = sess.portfolio_id if sess else _portfolio_id(conn, portfolio_id)
+        data = load_dossier_data(conn, portfolio_id=pid, session=sess, human_note=note)
+        markdown = render_dossier(data, generated_at=datetime.now(timezone.utc), include_local_detail=local_detail)
+        if save:
+            if sess is None:
+                raise CouncilError("--save needs a research session")
+            version = conn.execute(text("SELECT COALESCE(MAX(version), 0) + 1 FROM dossiers WHERE session_id = :s"), {"s": sess.id}).scalar_one()
+            conn.execute(
+                text("INSERT INTO dossiers (session_id, version, body_markdown, template_ver, human_note, status) VALUES (:s, :v, :b, :t, :n, 'DRAFT')"),
+                {"s": sess.id, "v": int(version), "b": markdown, "t": TEMPLATE_VERSION, "n": note},
+            )
+            echo_err(f"Saved dossier version {int(version)} for {sess.code}")
+    findings = lint_advice_language(markdown)
+    for f in findings:
+        echo_err(f"lint ({f.rule}): {f.excerpt!r}")
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown, encoding="utf-8")
+        echo_err(f"Wrote {output}" + ("  (LOCAL ONLY: do not share)" if local_detail else ""))
+    else:
+        typer.echo(markdown, nl=False)
+    if findings and strict:
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------------------------
+# frozen EDGAR data
+# ---------------------------------------------------------------------------------------------
+
+
+def _print_company(cik: str) -> None:
+    cache_dir = config.edgar_dir()
+    facts_doc = read_cached_document(cache_dir, cik, "companyfacts")
+    if facts_doc is None:
+        raise NotFoundError(f"CIK{cik} is not cached. Run: council human data fetch --cik {int(cik)}")
+    snapshot = CompanyFactsSnapshot(facts_doc)
+    periods = identify_fiscal_periods(snapshot)
+    typer.echo(f"{snapshot.entity_name} (CIK{snapshot.cik})")
+    typer.echo(f"  company facts: retrieved {facts_doc.meta.retrieved_at.isoformat()}  sha256 {facts_doc.meta.sha256[:16]}...  {facts_doc.meta.url}")
+    for label, p in (("latest annual period", periods.latest_annual), ("latest quarterly period", periods.latest_quarterly)):
+        if p is None:
+            typer.echo(f"  {label}: none found")
+        else:
+            typer.echo(f"  {label}: ends {p.end.isoformat()}, filed {p.filed.isoformat()}, form {p.form}, accession {p.accession}, "
+                       f"fy/fp as reported {p.fiscal_year}/{p.fiscal_period}")
+    sub_doc = read_cached_document(cache_dir, cik, "submissions")
+    if sub_doc is None:
+        typer.echo("  submissions: not cached")
+        return
+    info = parse_submissions(sub_doc.raw, expected_cik=cik)
+    typer.echo(f"  submissions: retrieved {sub_doc.meta.retrieved_at.isoformat()}  {sub_doc.meta.url}")
+    typer.echo(f"  SIC: {info.sic or 'n/a'} {info.sic_description or ''}  tickers: {', '.join(info.tickers) or 'n/a'}  recent filings: {len(info.filings)} (older filings not fetched)")
+
+
+def _edgar_client() -> EdgarClient:
+    sec = config.sec_settings()
+    return EdgarClient(user_agent=sec.user_agent, cache_dir=config.edgar_dir(), max_rps=sec.max_rps)
+
+
+@data_app.command("fetch")
+@cli_errors
+def data_fetch(
+    cik: Annotated[str, typer.Option("--cik", help="SEC CIK, e.g. 320193 or 0000320193.")],
+    refresh: Annotated[bool, typer.Option("--refresh", help="Re-download even if cached (replaces the frozen snapshot).")] = False,
+) -> None:
+    """Download and cache company facts + filing metadata for a CIK (validated, rate-limited)."""
+    normalized = normalize_cik(cik)
+    with _edgar_client() as client:
+        client.get_company_facts(normalized, refresh=refresh)
+        client.get_submissions(normalized, refresh=refresh)
+    _print_company(normalized)
+    manifest = write_manifest(config.edgar_dir())
+    typer.echo(f"Manifest updated: {manifest}")
+
+
+@data_app.command("inspect")
+@cli_errors
+def data_inspect(cik: Annotated[str, typer.Option("--cik", help="SEC CIK.")]) -> None:
+    """Describe a cached company without touching the network."""
+    _print_company(normalize_cik(cik))
+
+
+@data_app.command("manifest")
+@cli_errors
+def data_manifest() -> None:
+    """Rewrite data/edgar/MANIFEST.json from the cached documents."""
+    typer.echo(f"Manifest written: {write_manifest(config.edgar_dir())}")

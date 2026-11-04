@@ -1,0 +1,45 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Secrets -- never commit
+.env
+.env.*
+!.env.example
+.council.env
+.switch/
+*.pem
+*.key
+
+# Portfolios: any CSV is presumed to be private, except the bundled synthetic sample
+*.csv
+!samples/portfolio.csv
+portfolios/
+# Local-detail dossiers (`council human report --local-detail -o NAME.local.md`) contain positions
+*.local.md
+
+# Database dumps and backups
+*.dump
+*.sql.gz
+*.sql.zip
+*.sql.bz2
+*.bak
+dump*.sql
+*_dump.sql
+backup*.sql
+mysqldump*
+
+# SEC EDGAR cache: private to this machine until a frozen dataset is chosen deliberately
+# (then add it explicitly with `git add -f data/edgar/...`)
+data/edgar/CIK*/
+data/edgar/MANIFEST.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
