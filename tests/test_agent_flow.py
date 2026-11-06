@@ -358,3 +358,15 @@ def test_advance_rules(world: World) -> None:
 def test_finalize_requires_stage_three(world: World) -> None:
     code = world.create_session()
     assert "finalize only at stage 3" in world.human("finalize", code, "--note", "too early", ok=False)
+
+
+def test_stage_messages_are_sanitised_and_tag_both_researchers(world: World) -> None:
+    code = world.create_session()
+    for stage, needle in ((1, "Stage 1: initial analysis"), (2, "challenge round"), (3, "final synthesis")):
+        out = world.human("message", code, "--stage", str(stage))
+        assert needle in out and "@bull-researcher @bear-researcher" in out and f"[session {code}]" in out
+        for private in ("PRIVA", "PRIVB", "PRIVC", "shares", "market_value"):
+            assert private not in out
+    one = world.human("message", code, "--stage", "1")
+    assert "Is SYNT durable?" in one and '"holdings_count":4' in one and f"./council-agent next {code}" in one
+    assert "BadParameter" in repr(runner.invoke(council_app, ["human", "message", code, "--stage", "9"]).exception) or runner.invoke(council_app, ["human", "message", code, "--stage", "9"]).exit_code != 0

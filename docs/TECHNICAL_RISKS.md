@@ -2,6 +2,8 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026)** · L = likelihood, I = impact (H/M/L). Tn = test in IMPLEMENTATION_PLAN §3. Tags as in ARCHITECTURE.md.
 
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
+
 ### v0.2 changes
 Removed risks built on agent-triggered handoffs and on attachment privacy. Added: human-initiated stage overhead, privacy-by-design limits (same OS user), agent environment-variable limits, two-session concurrency, EDGAR fair access and field/tag variance, absence of price data, freshness heuristics, frozen-data labelling.
 

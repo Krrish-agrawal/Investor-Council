@@ -2,6 +2,8 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026)** · Solo build · Track 02 · Window: Nov 4 (12:01 AM IST) – Nov 7 2026 (11:59 PM IST). Nov 3 = Day 0: documentation and the non-Switch foundation (section 0).
 
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
+
 Hackathon rule: the project-specific Switch setup and workflow must be built **during** the hackathon. Before Nov 4 12:01 AM IST only these docs and the deterministic, non-Switch foundation (section 0) are committed. The room, agents and instructions are created on Day 1 or later.
 
 ### v0.2 changes
@@ -12,7 +14,7 @@ Solo schedule; two agents; no Analyst agent and no workflow engine; Day-1/2 test
 ## 0. Status on Nov 3 2026 (before kickoff)
 
 The deterministic foundation was built before the event, as permitted: it contains no Switch room, no
-Switch-connected agent configuration and no agent prompts. 217 tests pass (185 need no database, 32 run against
+Switch-connected agent configuration and no agent prompts. 218 tests pass (185 need no database, 33 run against
 MySQL 8.0.46).
 
 | Planned item | Status |

@@ -213,6 +213,44 @@ def rule(
     typer.echo(f"{claim.code}: ruling recorded as {claim.human_ruling}")
 
 
+@human_app.command("message")
+@cli_errors
+def stage_message(
+    session: Annotated[str, typer.Argument(help="Session code.")],
+    stage: Annotated[int, typer.Option("--stage", help="1, 2 or 3.")],
+    copy: Annotated[bool, typer.Option("--copy", help="Also copy it to the macOS clipboard (pbcopy).")] = False,
+) -> None:
+    """Print the stage message to paste into the room, tagging both researchers (built from the session; sanitised only)."""
+    if stage not in (1, 2, 3):
+        raise typer.BadParameter("--stage must be 1, 2 or 3")
+    engine = make_engine("human")
+    with engine.connect() as conn:
+        sess = get_session(conn, session)
+    c = sess.session_code if hasattr(sess, "session_code") else sess.code
+    tag = f"@bull-researcher @bear-researcher [session {c}]"
+    if stage == 1:
+        summary = json.dumps(sess.shared_summary, separators=(",", ":"))
+        cik = f", CIK {int(sess.target_cik)}" if sess.target_cik else ""
+        text = (f"{tag} Stage 1: initial analysis. Target: {sess.target_ticker}{cik}. My question: {sess.thesis} "
+                f"Portfolio context (sanitised): {summary} . Run ./council-agent next {c}, research independently, file your evidence "
+                "and claims, submit, and post a brief of about 120 words. Do not read the other researcher's work.")
+    elif stage == 2:
+        text = (f"{tag} Stage 2: challenge round. (I have run council human advance {c} --to 2.) Read the other researcher's filed brief "
+                f"with ./council-agent brief show {c} --other, challenge up to three of their claims (restate fairly, then dispute with your "
+                "own evidence, partly agree, agree, or ask for evidence), then submit and post a short summary. One round only.")
+    else:
+        text = (f"{tag} Stage 3: final synthesis. (I have ruled on the flagged claims and run council human advance {c} --to 3.) "
+                f"Run ./council-agent next {c} to see the challenges against you and my rulings, file your final position with "
+                "./council-agent final, and post a one-line note that you did.")
+    if sess.stage < stage:
+        echo_err(f"note: {c} is at stage {sess.stage}; run `council human advance {c} --to {stage}` before posting this.")
+    typer.echo(text)
+    if copy:
+        import subprocess
+        subprocess.run(["pbcopy"], input=text.encode(), check=False)
+        echo_err("copied to the clipboard")
+
+
 @human_app.command("status")
 @cli_errors
 def status(session: Annotated[Optional[str], typer.Argument(help="Session code (default: latest).")] = None) -> None:

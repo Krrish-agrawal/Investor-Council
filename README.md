@@ -8,23 +8,48 @@ financial-statement data, an evidence ledger with verification, and a Markdown r
 
 Design documents live in [docs/](docs/) (v0.2 is the source of truth; see [Documentation](#documentation) for how they relate to the code).
 
-## Status
+## Run the Switch demo
 
-Foundation plus the agent tooling (Nov 4). Everything below "Built" is covered by tests, including a full
-three-stage run with scripted agents against a real MySQL server; **no live Switch run has happened yet.**
+```bash
+scripts/start.sh && scripts/start_switch.sh     # database + agent folders; Switch Console and Mattermost
+```
+Then follow [switch/DEMO.md](switch/DEMO.md): you paste three generated messages into the `investor-council` room
+(`council human message S-000N --stage 1|2|3 --copy`), advance stages, rule on flagged claims and finalize. Actual results,
+including what is blocked, are in [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md). Screenshots: `docs/screenshots/`.
 
-| Built and tested | Pending |
+## Status (updated Nov 6 2026)
+
+**Implemented and tested:** everything in the left column below, covered by the automated suite (218 tests, see [Tests](#tests)).
+**Verified live once:** on Nov 5 a full three-stage session (**S-0004**) ran in a Switch room with two live Claude Code agents,
+using the synthetic company and the sample portfolio only.
+
+> **Who played the human in S-0004:** an AI assistant, acting as "test operator" because the owner asked it to carry out the
+> end-to-end verification. It pasted the stage messages into Mattermost, ran `advance`, `rule` and `finalize`, and wrote the
+> rulings and the decision note. The dossier labels them *TEST RUN ruling by the test operator*. They are **not** a real
+> investor's decisions, and no run with a person making the rulings is recorded here. The earlier session S-0003 was the
+> headless `scripts/demo.sh --auto` fallback with automated stand-in rulings.
+
+| Built and tested | Verified live (S-0004, synthetic data) |
 |---|---|
-| MySQL 8 schema, migrations, human and restricted agent accounts | Switch Console installed and connected (see [switch/SETUP.md](switch/SETUP.md)) |
-| Local portfolio CSV ingestion, deterministic math, sanitised summary | The `#investor-council` room and live Bull/Bear agents |
-| SEC EDGAR adapter (synthetic fixtures only) | Day-1 Switch tests T1 to T10; T11 (real EDGAR) and the frozen dataset |
-| Evidence verification, claim typing, `GAP`, `STALE`, `CONFLICT` | Filing-text evidence |
-| **`council-agent` commands** (`next`, `evidence`, `claim`, `submit`, `brief show --other`, `challenge add`, `final`) with stage validation, as the restricted account | |
+| MySQL 8 schema, migrations, human and restricted agent accounts | Switch Console + Mattermost room `investor-council` with agents `bull-researcher` and `bear-researcher` (Claude Code, Auto mode on, Bypass off) |
+| Local portfolio CSV ingestion, deterministic math, sanitised summary | One human message tagging both agents starts both sessions; they ran concurrently |
+| SEC EDGAR adapter (synthetic fixtures only) | 13 typed claims from each agent; Stage-2 challenges (Bull 2, Bear 3); final positions |
+| Evidence verification, claim typing, `GAP`, `STALE`, `CONFLICT` | `finalize` refused while a claim was `needs_evidence`, then succeeded after `accept`/`reject` |
+| **`council-agent` commands** (`next`, `evidence`, `claim`, `submit`, `brief show --other`, `challenge add`, `final`, `whoami`) with stage validation, as the restricted account | Room transcript (33 posts) and FINAL dossier checked: none of the 7 private tickers or their shares, prices or values appear |
 | **Stage control** (`council human status`, `advance`, `finalize`) and the **ruling gate** | |
 | Dossier renderer (briefs, final positions, UNRESOLVED section, DRAFT/FINAL) and advice-language lint | |
 | Agent directory generator (`council human agents init`) and the instruction texts in `switch/` | |
 
-Verified on macOS with Python 3.13.12, Docker 29.9 and MySQL 8.0.46 (the `mysql:8.0` image).
+**Not done, and not claimed:**
+
+* **Orchestration is manual.** The human generates each stage message (`council human message`), posts it in the room, and runs
+  `advance`, `rule` and `finalize` in a terminal. Agents act only when a person addresses them; there is no agent-to-agent trigger
+  and no automatic stage control. A room-side "Clerk" agent that would run those commands from the chat was **not built** (see
+  [Known limitations](#known-limitations)).
+* **Live SEC EDGAR was not run** (needs your own contact string for the SEC User-Agent). Everything above used the synthetic fixture.
+* Filing-text evidence is not stored.
+
+Verified on macOS with Python 3.13.12, Docker 29.9 and MySQL 8.0.46 (the `mysql:8.0` image); Switch Console 0.40.1 with switch-core 0.31.0.
 
 ## Requirements
 
@@ -46,7 +71,7 @@ Passwords have no defaults. Generate them yourself, e.g. `openssl rand -base64 2
 
 * `MYSQL_ROOT_PASSWORD` and `COUNCIL_DB_ADMIN_PASSWORD` must be the same value.
 * `COUNCIL_DB_HUMAN_PASSWORD` is for the full-access `council_human` account.
-* `COUNCIL_DB_AGENT_PASSWORD` is for the restricted `council_agent` account (optional until agent tooling exists).
+* `COUNCIL_DB_AGENT_PASSWORD` is for the restricted `council_agent` account (needed by the agent directories).
 
 `.env` is git-ignored. The database port defaults to **3307** so it does not clash with a MySQL you may
 already run on 3306. `council db init` is safe to run repeatedly.
@@ -145,11 +170,11 @@ Freshness thresholds are configurable in `config/freshness.yaml` and always labe
 ## Tests
 
 ```bash
-pytest                 # 217 tests (185 need no database + 32 MySQL integration tests)
+pytest                 # 218 tests collected: 185 need no database + 33 marked `db` (MySQL integration)
 pytest -m "not db"     # no database needed
 ```
 
-Integration tests skip, rather than fail, when MySQL is unreachable. They create throwaway
+Integration tests skip, rather than fail, when MySQL is unreachable (with the server down, 186 pass and 32 skip, because one `db`-marked test needs no server). They create throwaway
 `council_test_*` databases and uniquely named accounts and drop them afterwards; your real database and
 accounts are not touched. A leak test derives every private value (tickers, shares, prices, market values,
 total) from the holdings and asserts none appears in the shareable summary or dossier, with a control
@@ -172,8 +197,11 @@ council/
   edgar/         client (cache, rate limit), validate, facts, metrics (curated map), manifest
   evidence/      freshness, verify, service (evidence + claims)
   report/        render (deterministic), lint, model (DB loader)
+  agent/         council-agent CLI and stage validation (restricted account)
   cli/           council db ..., council human ...
 config/freshness.yaml   samples/portfolio.csv   docker-compose.yml   tests/
+scripts/                start.sh, start_switch.sh, demo.sh, seed_synthetic_snapshot.py
+switch/                 room and agent instructions, SETUP.md, DEMO.md
 ```
 
 ## Known limitations
@@ -187,8 +215,17 @@ config/freshness.yaml   samples/portfolio.csv   docker-compose.yml   tests/
 * **Evidence is numeric XBRL facts only.** Filing-text evidence is not stored (a quote-verification
   utility exists but nothing uses it yet). Verification proves a figure is in the stored snapshot, not that
   the source is correct or complete.
-* **Agent tooling is not built:** no `council agent ...` commands, stage advancing or gating, and no Switch
-  room or agents. This is deliberate until the hackathon starts.
+* **Manual orchestration.** The agent tooling and stage control are built (`council-agent ...`, `council human status`,
+  `advance`, `rule`, `finalize`), but a person (or, in S-0004, an assistant acting as test operator) must paste each stage
+  message into the room and run `advance`, `rule` and `finalize` in a terminal. A room-side agent that would run the human
+  steps from the chat was not built: it would need an agent registered outside Switch Console. Switch's documentation
+  describes registration keys under **API Keys** in the Gateway for that purpose; the Console 0.40.1 Admin pages
+  (Connectors, Status, Connector apps) do not offer it, and the Gateway page itself was not located or tested here
+  (see [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md)). Treat it as *not verified*, not as a platform limit.
+* **No run with a person making the rulings is recorded.** S-0004's rulings and decision note were written by the test
+  operator on synthetic data.
+* **Agents are not isolated from your user account.** Bull and Bear run as your OS user; the restricted MySQL account and
+  directory separation are defence in depth, not a hard boundary.
 * **Same-sector overlap is a heuristic** that depends on your own sector labels; an unknown sector is
   reported as unknown, never guessed.
 * **CSV input is narrow by design:** UTF-8, comma-separated, plain numbers, at most 10,000 rows and 5 MB.
@@ -201,14 +238,15 @@ config/freshness.yaml   samples/portfolio.csv   docker-compose.yml   tests/
 
 ## Documentation
 
-The six design documents in [docs/](docs/) describe the approved v0.2 design and mark what is implemented and
-what is pending; they were synchronised with the code on Nov 4 2026. [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md)
-records what has actually been verified (and what has not). Remaining differences between design and code:
+The six design documents in [docs/](docs/) describe the approved v0.2 design. They were written before the live run, so
+passages that say "pending" or "not installed" describe the Nov 3 to Nov 4 state; each file carries a status note at the
+top. [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) is the record of what has actually been verified (and what has not).
+Remaining differences between design and code:
 
-* **Pending:** connecting Switch Console and running live agents; Day-1 tests T1 to T10; T11 and the frozen dataset.
-* **Evidence is numeric XBRL facts only;** storing filing-text evidence is pending.
-* **No `scripts/` directory yet:** reset the database with `docker compose down -v` (this deletes the volume)
-  followed by `council db init`; there is no health-check script.
+* **Not done:** the room-side "Clerk" agent (see Known limitations); live SEC (T5/T11) and the frozen dataset; filing-text evidence.
+* **Scripts:** `scripts/start.sh` (MySQL, schema, agent folders, health check), `scripts/start_switch.sh` (Console in a clean
+  environment, Mattermost check), `scripts/demo.sh` (headless fallback without Switch) and `scripts/seed_synthetic_snapshot.py`.
+  Resetting the database is still `docker compose down -v` (this deletes the volume) followed by `council db init`.
 * **The SEC cache is git-ignored by default;** a chosen dataset is added deliberately with `git add -f`.
 * **Both agents share one restricted database account.** The database cannot tell Bull from Bear; the role is bound by
   each agent directory's `.council.env`, and an agent running as your OS user could edit it. Same-user limits are

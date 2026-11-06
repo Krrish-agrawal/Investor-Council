@@ -2,6 +2,8 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026).** Tags as in ARCHITECTURE.md. Nothing essential depends on an UNVERIFIED item.
 
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
+
 **Implementation status:** this document is the approved design and the tooling is built: the typing rules and evidence verification (`council/evidence/`), the agent commands and stage validation (`council/agent/`, run as `./council-agent` or `council agent`), the stage controls and ruling gate (`council/stages.py`, `council/report/gate.py`), the sanitised summary, the dossier renderer and the instruction texts (`switch/`). What is **pending** is running it live: Switch Console connected, the room, the two registered agents and the Day-1 tests (T1 to T10).
 
 Agents: `bull-researcher`, `bear-researcher` — provider Claude Code, run location "This computer", same Switch owner (the human), Auto mode on, Bypass off [Docs: agent-settings]. Room aliases `@bull`, `@bear` via `!set-alias` [Docs: create-a-room]. Names are immutable once created [Docs: onboard-your-agents], so they are fixed here.

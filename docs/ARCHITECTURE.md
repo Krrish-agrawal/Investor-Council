@@ -2,6 +2,8 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026).** Read with PRD.md, AGENT_DESIGN.md, DATABASE_SCHEMA.md.
 
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
+
 Tags: **[Docs: page]** = verified at docs.switchagents.ai (the Switch docs MCP was unavailable; pages were read directly). **[UNVERIFIED — Tn]** = Day-1/2 test in IMPLEMENTATION_PLAN §3. Nothing essential depends on an UNVERIFIED item.
 
 ### v0.2 changes
@@ -9,7 +11,7 @@ Two agents; human-initiated stages; local CSV processing with a sanitised room s
 
 ### Implementation status (Nov 3 2026, before kickoff)
 
-The deterministic foundation and the agent tooling exist and are tested (217 tests; Python 3.13; MySQL 8.0.46).
+The deterministic foundation and the agent tooling exist and are tested (218 tests; Python 3.13; MySQL 8.0.46).
 Connecting Switch Console and running live agents is still pending (it needs Console installed; see `switch/SETUP.md`).
 Sections below describe the approved design; components marked **(pending)** are not built yet.
 
@@ -206,7 +208,7 @@ Investor-Council/
   samples/portfolio.csv    # synthetic sample portfolio (invented tickers and prices)
   data/edgar/              # local EDGAR cache: CIK##########/{companyfacts,submissions}.json + .meta.json, MANIFEST.json (git-ignored)
   docker-compose.yml       # MySQL only (Switch Console manages Switch's own containers)
-  tests/                   # 217 tests; synthetic EDGAR fixtures in tests/synthetic.py
+  tests/                   # 218 tests; synthetic EDGAR fixtures in tests/synthetic.py
   pyproject.toml           # requires Python >=3.13,<3.14
   .env.example             # every secret blank; the real .env is git-ignored
   .gitignore               # .env*, .council.env, .switch/, every *.csv except the sample, *.local.md, dumps, SEC cache

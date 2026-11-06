@@ -1,6 +1,8 @@
 # Investor Council: Database Schema (MySQL 8)
 
 Status: **v0.2, synchronised with the implemented migration `0001_initial` (Nov 3 2026).** The DDL below is
+
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
 the content of `council/db/migrations/0001_initial.sql`, applied by `council db init`, and was run against
 MySQL 8.0.46. The example records in section 5 are executed against a scratch database as part of the
 pre-commit check.

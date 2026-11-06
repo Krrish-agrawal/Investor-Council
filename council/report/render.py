@@ -103,7 +103,7 @@ def render_dossier(data: DossierData, *, generated_at: datetime, include_local_d
 
     if session:
         add(f"- **Session:** {session.code}  ·  **Target:** {session.target_ticker}  ·  **Session date:** {session.session_date.isoformat()}"
-            f"  ·  **Stage:** {session.stage} of 3  ·  **Status:** {session.status}")
+            f"  ·  **Stage:** {session.stage} of 3  ·  **Status:** {'FINALIZED' if final else session.status}")
         add(f"- **Human's thesis / question (verbatim):** {_cell(session.thesis)}")
     else:
         add("- **Session:** none. Portfolio-only dossier; no research target selected.")

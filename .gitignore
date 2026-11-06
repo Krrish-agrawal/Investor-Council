@@ -48,3 +48,4 @@ data/edgar/MANIFEST.json
 .DS_Store
 .idea/
 .vscode/
+demo_output/

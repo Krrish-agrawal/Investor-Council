@@ -2,6 +2,8 @@
 
 Status: **v0.2, synchronised with the implemented pre-kickoff foundation (Nov 3 2026)** · Hackathon: WeMakeDevs *Flip the Switch* (Nov 4–7 2026; submissions close 11:59 PM IST Nov 7) · **Track 02 — Best Personal or Creative Workflow** · **Solo build**
 
+> **Update (Nov 6 2026):** the live Switch run (session S-0004, synthetic data) has happened; see [TEST_RESULTS.md](TEST_RESULTS.md). Passages below that say *pending* or *not installed* describe the Nov 3 to Nov 4 state. In S-0004 an AI assistant acted as the human "test operator". The room-side "Clerk" agent was not built, so orchestration is manual (stage messages pasted; `advance`, `rule`, `finalize` in a terminal). Current test count: 218 (185 without a database, 33 MySQL).
+
 > Investor Council is a **research and decision-support** workspace. It is not a financial adviser, produces no buy/sell/hold recommendation, never touches a brokerage account and never executes trades.
 
 Conventions: **[Docs: page]** = verified against docs.switchagents.ai (page name given). **[UNVERIFIED — Tn]** = not documented; proven or replaced by a fallback in Day-1/Day-2 test *Tn* (see IMPLEMENTATION_PLAN §3). **No essential feature depends on an UNVERIFIED item.**
@@ -14,7 +16,7 @@ Conventions: **[Docs: page]** = verified against docs.switchagents.ai (page name
 
 ### Implementation status (Nov 3 2026, before kickoff)
 
-The deterministic foundation and the agent tooling are built and tested (217 tests, MySQL 8 and Python 3.13). The live
+The deterministic foundation and the agent tooling are built and tested (218 tests, MySQL 8 and Python 3.13). The live
 Switch workflow is not running yet: Switch Console still has to be installed and connected (see `switch/SETUP.md`).
 
 | MVP feature (section 4) | Status |

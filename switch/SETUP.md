@@ -106,3 +106,11 @@ The human then runs `council human status S-0001`, rules on flagged claims with 
 ## 7. Record what you observe
 
 Write each observation into `docs/TEST_RESULTS.md` (T1 to T6, T9) and flip the matching UNVERIFIED tags in the docs.
+
+## 8. Known gap: agents that run outside Switch Console
+Console registers its own agents with your signed-in session (no key to create). An agent built with its own client would instead need a
+**registration key**; Switch's docs say anyone signed in to the Gateway can create one under **API Keys**
+([People and agents](https://docs.switchagents.ai/switch-rooms/administer/people-and-agents#register-an-agent-that-runs-outside-switch-console)).
+Console 0.40.1's Admin pages do not show API Keys, and this project has not located the Gateway page, so a room-side agent that would run
+`advance`/`rule`/`finalize` from the chat was not built. Do not create a Mattermost bot account for this without deciding it deliberately.
+

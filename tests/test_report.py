@@ -321,6 +321,8 @@ def test_final_render_succeeds_once_every_flagged_claim_is_accepted_or_rejected(
     md = render(resolved, final=True)
     assert "**FINAL.**" in md and "DRAFT" not in md.split("## 1.")[0]
     assert "UNRESOLVED" not in md
+    # finalize renders before it flips the session to FINALIZED, so the FINAL header must not say OPEN
+    assert "**Status:** FINALIZED" in md and "**Status:** OPEN" not in md
 
 
 def test_needs_evidence_is_not_a_resolution() -> None:

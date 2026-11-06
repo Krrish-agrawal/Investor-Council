@@ -33,6 +33,7 @@ brokerage credentials, and never place trades. The human decides.
 ./council-agent claim add S-XXXX --type FACT --text "..." --evidence E-1 [--rank 1]
 ./council-agent claim add S-XXXX --type ASSUMPTION --text "..." --basis C-B1 --falsifier "..."
 ./council-agent claim add S-XXXX --type GAP --text "..."
+./council-agent claim list S-XXXX                                        # your own claims, any stage (use it before `final`)
 ./council-agent submit S-XXXX --summary "<= 120 words"                   # stages 1 and 2
 ./council-agent brief show S-XXXX --other                                # stage 2 onward
 ./council-agent challenge add S-XXXX --target C-X1 --stance disputes --restated "..." --argument "..." --counter-evidence E-3

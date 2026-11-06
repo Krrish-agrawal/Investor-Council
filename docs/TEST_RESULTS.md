@@ -1,29 +1,57 @@
-# Test results (what has and has not been verified)
+# Test results (actual, Nov 5 2026)
 
-Last updated: Nov 4 2026. Be careful to read the "Not yet verified" section: scripted tests are not live Switch results.
+Environment: macOS 26.2 arm64, Python 3.13.12, Docker 29.9.2, MySQL 8.0.46, Switch Console 0.40.1 (server switch-core 0.31.0),
+Claude Code 2.1.150. Data: the labelled synthetic fixture and the sample portfolio only. **Live SEC was not run.**
 
-## Verified
+**Who played the human in the live run (S-0004):** an AI assistant acting as "test operator", at the project owner's request for an
+end-to-end verification (traced in the assistant session log: it ran `council human message/advance/rule/finalize` and pasted the stage
+messages into Mattermost through browser automation). The rulings and the decision note are therefore **test-operator rulings on
+synthetic data**, as the dossier says; nothing in the repository, database or shell history shows the owner making them. The database
+records no actor for a ruling (only the ruling, its note and `ruled_at`). Session S-0003 was the headless `scripts/demo.sh --auto` run
+with automated stand-in rulings. No run with a real person ruling has been recorded.
 
-| What | How | Result |
+## Automated suite
+`pytest`: **218 passed, 0 failed** on Nov 5 with MySQL running (185 need no database, 33 use real MySQL, incl. a scripted three-stage workflow).
+
+Re-checked Nov 6: `pytest --collect-only` gives **218 tests** (185 not marked `db` + 33 marked `db`). With Docker stopped, `pytest` gives
+186 passed and 32 skipped (one `db`-marked test needs no server); the 33 integration tests were **not re-run** on Nov 6 because that needs
+the MySQL container. The earlier "217" in the README and design docs was the count when those documents were written; tests were added afterwards.
+
+## Live Switch results (executed, observed)
+| Test | Result | Evidence |
 |---|---|---|
-| Foundation: schema, ingestion, math, sanitised summary, EDGAR adapter (synthetic), evidence, dossier | `pytest` (185 tests without a database) | pass |
-| Agent tooling against a real MySQL 8 server **as the restricted account** | `tests/test_agent_flow.py` and `tests/test_db_integration.py` (32 DB tests) | pass |
-| Full three-stage workflow: two scripted researchers and a scripted human through the real `council-agent` and `council human` CLIs: evidence verified, `CONFLICT` detected, challenges, final positions, rulings, `finalize`, FINAL dossier | `test_full_three_stage_workflow_with_the_ruling_gate` | pass |
-| Stage validation: out-of-stage commands refused; blind first pass (other's brief unreadable at stage 1 and until you have filed); work frozen after `submit`; max three challenges; bare dispute downgraded; cannot challenge own claims or a `GAP`; cannot cite the other's evidence; closed session refuses work | `test_stage_validation`, `test_researchers_cannot_cite_each_others_evidence`, workflow test | pass |
-| Ruling gate: flagged claims never appear as findings; DRAFT banner counts them; `final=True` and `council human finalize` refuse while any is unresolved; `needs_evidence` is not a resolution | `tests/test_report.py`, workflow test | pass |
-| Agent cannot bypass database permissions: only the `agent` account can be requested in agent mode; the human's `.env` is never loaded; the agent CLI imports no portfolio, report or stage code (AST check); direct SQL on `holdings`, `portfolios`, `dossiers`, `research_sessions.portfolio_id` is denied; `INSERT` on `sources` is denied | `test_agent_cli_never_loads_the_humans_env...`, `test_agent_package_cannot_reach...`, `test_database_refuses...`, `test_unregistered_snapshot...` | pass |
-| `./council-agent` wrapper run from a generated agent directory against the real project database | manual run on session S-0001 | `whoami` and `next` work; the view contains no private value; direct SQL on private tables denied |
-| `council human agents init` writes only the restricted account and never the human's secrets | `tests/test_cli_data.py` | pass |
+| T1 Environment | **PASS** | MySQL healthy; Switch Console, switch-core and Mattermost running; unrelated containers untouched |
+| T2 Database security | **PASS** | agent account denied `SELECT` on holdings/portfolios/dossiers/`portfolio_id`, denied `INSERT` on sources and any `UPDATE`/`DELETE` (automated + manual) |
+| T3 Portfolio ingestion | **PASS** | valid, invalid, duplicate and conflicting CSV cases (automated) |
+| T4 Portfolio privacy | **PASS** | the whole room transcript (33 posts incl. threads, via Mattermost API) and the FINAL dossier contain none of the 7 private tickers or their shares/prices/values |
+| T5 SEC integration | **BLOCKED** | needs the owner's own contact string for the SEC User-Agent; adapter validated on synthetic fixtures only |
+| T6 Bull Researcher | **PASS** | live Claude Code agent in Switch: 13 typed claims, evidence verified, brief posted (session S-0004) |
+| T7 Bear Researcher | **PASS** | independent run: 13 claims, 3 challenges; different method and findings from Bull |
+| T8 Collaboration | **PASS** | both researched in parallel (T1 concurrency confirmed: both replied within one minute), read each other's filed brief, challenged (Bull 2, Bear 3) |
+| T9 Human governance | **PASS** (test operator) | status lists flagged claims; `finalize` refused while a claim was `needs_evidence`; accept/reject resolved; then finalized |
+| T10 Final dossier | **PASS** | FINAL banner, frozen-snapshot disclaimer, accession/filing date/source URL per evidence row, STALE and UNVERIFIED labelled, advice-language lint clean, no private holdings |
+| T11 Full demonstration | **PASS (synthetic data, test operator as the human)** | S-0004 run in the `investor-council` room: stage messages, parallel research, challenge round, rulings, final positions, FINAL dossier |
 
-## Not yet verified (pending)
+Switch behaviour observed: a human message tagging an agent starts its session ("Starting a session to handle this"); two agents
+tagged in one message run concurrently; the agent runs `./council-agent` with no approval stall under Auto mode (Bypass off);
+the agent's working directory (symlinked to `agents/<role>-researcher`) is honoured; managed agents keep credentials on the server,
+not in the repo folder. Whether `CLAUDE.md` is loaded separately is moot: the same text is in the Agent instructions field.
 
-| Item | Why | Fallback if it fails |
-|---|---|---|
-| **Phase 1: Switch Console connected; room `#investor-council`; a human message from Mattermost gets a reply from a live Claude Code agent; the agent runs `./council-agent`** | Switch Console is **not installed** on the development machine; installing it ties the agents to that machine and its Claude account, which is the owner's decision (see `switch/SETUP.md`) | none: this is the core of the project |
-| T1: two sessions run concurrently from one message | needs Switch | sequential stage messages |
-| T2: `CLAUDE.md` is loaded from the agent directory | needs Switch | the same text is pasted into the Agent instructions field |
-| T3: Auto mode lets the agent run `./council-agent` without approval stalls; tool allowlist | needs Switch | answer approvals; rely on grants |
-| T4: the agent can run the wrapper by relative path from its directory | needs Switch (the wrapper is verified from a normal shell) | absolute path |
-| T5, T6, T9, T10 | need Switch | see docs/IMPLEMENTATION_PLAN.md |
-| T11: real SEC EDGAR responses match the parser; a frozen dataset exists | needs a contact string for the SEC User-Agent that the owner provides | hand-curated subset |
-| Live agent compliance with the protocol (starting only when asked, filing before reading, one challenge round) | needs Switch | tool-side gates already refuse violations |
+## Not achieved / blocked
+* **Human steps driven from the room (Clerk): not built.** The idea was a non-LLM agent that runs `advance`, `rule` and `finalize` from the
+  chat. It would be an agent registered outside Switch Console, which Switch's docs say uses a **registration key** that anyone signed in to
+  the **Gateway** can create under **API Keys** ([People and agents](https://docs.switchagents.ai/switch-rooms/administer/people-and-agents#register-an-agent-that-runs-outside-switch-console)).
+  What was found on Nov 6 (read-only; nothing created, no credentials viewed): Switch Console 0.40.1's **Admin** area has only *Connectors*,
+  *Status* and *Connector apps*, with no API Keys page; its Status page shows the local server running (switch-core 0.31.0, "runs without
+  Docker") with only the Mattermost component stopped. **The Gateway page was not located, so whether the registration-key feature is
+  available on this local server is unverified.** This is a Console-UI observation, not evidence of a Switch platform limit. The other
+  route considered, a Mattermost bot account, means creating a new credentialed identity; it was denied by the session's permission check
+  and not worked around, and it has not been authorised since. Instead `council human message S --stage N` generates the exact message to
+  paste; `advance`, `rule` and `finalize` stay terminal commands.
+* Live SEC (T5): BLOCKED on a contact string. **Optional pending task for the owner:** set `COUNCIL_SEC_USER_AGENT` to your own name and contact (not an employer address), then run `council human data fetch --cik <CIK>`. Until then every SEC statement in the docs and blog applies to synthetic fixtures only.
+* The user's headless fallback `scripts/demo.sh --auto` (no Switch) was not re-run in this pass.
+
+## Defects found and fixed during this pass
+* Console exited at launch because the shell exported `ELECTRON_RUN_AS_NODE` (fixed by `scripts/start_switch.sh`).
+* The downloaded `.dmg` in `~/Downloads` was corrupt (no valid image); the official release was fetched and its SHA-256 verified.
+* Mattermost's container stopped when Docker restarted and Console did not restart it (handled by `scripts/start_switch.sh`).
