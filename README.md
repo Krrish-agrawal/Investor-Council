@@ -8,6 +8,8 @@ financial-statement data, an evidence ledger with verification, and a Markdown r
 
 Design documents live in [docs/](docs/) (v0.2 is the source of truth; see [Documentation](#documentation) for how they relate to the code).
 
+Blog post (setup, architecture, honest limitations): [docs/blog/i-built-an-ai-investment-council-with-switch.md](docs/blog/i-built-an-ai-investment-council-with-switch.md).
+
 ## Run the Switch demo
 
 ```bash

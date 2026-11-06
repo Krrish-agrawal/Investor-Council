@@ -9,7 +9,7 @@ are clicks in Switch Console, a desktop app. Nothing in this repository can clic
   machine where it runs, using that machine's `claude auth login` account. Agents inherit the owner's access
   ([identity and access](https://docs.switchagents.ai/switch-rooms/internals/identity-and-access)). Use the machine
   and the account you intend the project to run on.
-* Local agents answer only while Switch Console is open and the machine is awake
+* Agents Switch Console runs on this computer answer only while Switch Console is open; agents moved to a managed machine (the default on a server Console runs, since Console 0.40) keep answering without Console, but the machine must be on. Check **Your Agents → the agent**. Keep the machine awake either way
   ([what keeps your agent running](https://docs.switchagents.ai/switch-rooms/getting-started/what-keeps-your-agent-running)).
 
 ## 1. Prerequisites (already done in this repo)

@@ -26,7 +26,7 @@ That is Investor Council. It is also, I think, a decent first project for learni
 
 Switch is a way to put people and AI agents in the same chat room and have them work together. The pieces that matter for this post:
 
-- **Switch Console** is a desktop app. On my Mac it ran a local Switch server (in Console 0.40.1 that server runs without Docker) and a bundled **Mattermost** instance (which does need Docker), and it starts a Claude Code session on my machine when one of my agents is addressed. ([Install Switch Console](https://docs.switchagents.ai/switch-rooms/getting-started/install-switch-console))
+- **Switch Console** is a desktop app. On my Mac it ran a local Switch server (in Console 0.40.1 that server runs without Docker) and a bundled **Mattermost** instance (which does need Docker), and it starts a Claude Code session on my machine when one of my agents is addressed. (In Console 0.40 the agents it runs can also be moved onto a "managed machine", which is the same computer; see lesson 5.) ([Install Switch Console](https://docs.switchagents.ai/switch-rooms/getting-started/install-switch-console))
 - **An agent** is a named thing with a working directory, a run location, a provider (I used Claude Code) and standing **Agent instructions**. Names and directories are fixed at creation. ([Add an agent](https://docs.switchagents.ai/switch-rooms/getting-started/add-a-second-agent), [Agent settings](https://docs.switchagents.ai/switch-rooms/getting-started/agent-settings))
 - **A room** is a channel in Mattermost with **Room instructions** that every agent reads when it joins. ([Create a room](https://docs.switchagents.ai/switch-rooms/getting-started/create-a-room))
 - **You `@mention` an agent** to give it work. An agent acts when someone with permission addresses it, and ignores messages that don't. ([Work in a room](https://docs.switchagents.ai/switch-rooms/using/work-in-a-room))
@@ -37,7 +37,7 @@ One fact from the docs shaped my whole design: *follow-ups start only from a per
 ## The architecture, in one picture
 
 ```mermaid
-flowchart LR
+flowchart TB
   H(["Human investor"])
 
   subgraph LOCAL["Terminal only: never enters the room"]
@@ -62,7 +62,7 @@ flowchart LR
   SEC[("SEC EDGAR")]
 
   CSV --> HCLI
-  HCLI --> DB
+  HCLI -- "sessions, rulings, final dossier" --> DB
   HCLI -- "sanitised summary<br/>(human pastes it)" --> H
   H -- "human pastes each stage message" --> MM
   MM <--> CORE <--> CON
@@ -73,15 +73,16 @@ flowchart LR
   ACLI --> DB
   ACLI --> SNAP
   SEC -. "council human data fetch" .-> SNAP
-  HCLI -- "finalize: renders dossier" --> DB
 ```
 
-Read it left to right:
+*(Image version for platforms that don't render Mermaid: [docs/diagrams/architecture.png](../diagrams/architecture.png).)*
 
-- **I** work in two places: a terminal (`council human …`) and the Mattermost room.
+Read it from top to bottom:
+
+- **The human** works in two places: a terminal (`council human …`) and the Mattermost room.
 - **Switch** supplies the shared room, the addressable agents, the instructions every agent reads, and the audit trail of who said what.
 - **The agents** do not reason over free text alone. They call a small Python CLI, `./council-agent`, which reads frozen SEC snapshots, verifies evidence and writes typed claims to **MySQL**.
-- **My raw portfolio never leaves the left-hand box.** The room sees only a sanitised summary.
+- **The raw portfolio never leaves the terminal-only box.** The room sees only a sanitised summary.
 
 The principle I kept repeating while building it: **chat carries discourse and pointers; the ledger carries structured truth.** Switch is the collaboration layer, not my orchestrator, and the database is the source of record.
 
@@ -137,10 +138,6 @@ The message tags both agents, carries `[session S-0004]` and the sanitised portf
 
 ![Stage 1 briefs](../screenshots/03-stage1-briefs.png)
 *Stage 1 in the `investor-council` room. The pasted message ends with the sanitised summary JSON. Below it, `bear-researcher` and `bull-researcher` post briefs citing claim codes (C-X9, C-B8…) and flagging that every registered figure is `STALE`.*
-
-<!-- SCREENSHOT TODO (screenshot plan, S3): terminal output of `council human status` listing flagged claims and reasons -->
-<!-- SCREENSHOT TODO (screenshot plan, S4): the room thread during the Stage 2 challenge round -->
-<!-- SCREENSHOT TODO (screenshot plan, S5): terminal showing `council human finalize` refused while a claim is `needs_evidence` -->
 
 ### Stage 2: the challenge round
 
@@ -329,16 +326,16 @@ For real data, set `COUNCIL_SEC_USER_AGENT="Your Name you@example.com"` (your ow
 2. **Put structure in a ledger; keep the room for discourse.** A session might not have prior room history (new session, reset, compaction), so every stage message carries `[session S-0004]` and agents re-hydrate state from `./council-agent next`. "Trust the tool over chat history" is in the agent instructions.
 3. **Write Room instructions like a protocol, and Agent instructions like a role contract.** Short, numbered, with explicit "do not" lines and "report errors plainly instead of producing plausible output". The docs' guidance on [shared context](https://docs.switchagents.ai/switch-rooms/using/shared-context) is worth reading first.
 4. **Choose names and directories before you create agents.** Both are fixed at creation, and re-registering means a new identity and re-inviting. I decided on `bull-researcher` and `bear-researcher` up front for that reason.
-5. **Remember that local agents only answer while Console is open and your machine is awake.** If an agent is silent, check that first, then check you addressed it by its exact name ([When an agent doesn't answer](https://docs.switchagents.ai/switch-rooms/using/agent-not-answering)).
+5. **Find out what keeps your agent answering.** It depends on who runs it. If Switch Console runs the agent on your computer, quitting Console stops it. If a managed machine runs it (the default on a server Console runs, since Console 0.40), quitting Console has no effect, but the machine must be on and its agent controller running. Open **Your Agents → the agent** to see which applies ([What keeps your agent running](https://docs.switchagents.ai/switch-rooms/getting-started/what-keeps-your-agent-running)). If an agent is silent, check that first, then check you addressed it by its exact name ([When an agent doesn't answer](https://docs.switchagents.ai/switch-rooms/using/agent-not-answering)). Either way, keep the machine awake during a run.
 6. **Start with Auto mode on and Bypass off.** In S-0004 the agents ran `./council-agent` without an approval stall. If an approval does appear it may be in a thread, not the main channel.
-7. **Tag every agent explicitly, every time.** Follow-ups route to "the agent that last spoke", which is ambiguous with two agents. I left them off.
+7. **Tag every agent explicitly, every time.** An `@` always wins, and a message without one reaches no agent unless the server has follow-ups on. Follow-ups reach "the agent that last spoke, or was last tagged, in the thread", which is ambiguous with two agents, so every stage message in this project tags both agents by name. (`!follow-ups off` turns them off per room.)
 8. **Assume everything in a room is visible to every agent.** Decide what to share before you paste, not after. This one decision (no CSV in the room) shaped half of my architecture.
-9. **Test the undocumented stuff early.** I wrote down every assumption (does `CLAUDE.md` load? do two sessions run at once?) as a numbered test and ran them against the real app. Writing the fallback beside each assumption meant a failed test cost me a paragraph of docs, not a redesign.
+9. **Test the undocumented stuff early.** I wrote down every assumption (does `CLAUDE.md` load? do two sessions run at once?) as a numbered test and ran them against the real app (all but the live-SEC one). Writing the fallback beside each assumption meant a failed test cost me a paragraph of docs, not a redesign.
 10. **Write limitations down as you hit them, and re-check them before you publish.** The Clerk gap is in my test results from the day it happened, and my first note called it "blocked". Re-reading the docs and the Console showed the accurate statement is narrower: not found in Console's UI, unverified in the Gateway. A limitation you haven't re-checked is a claim you can't back up.
 
 ## Closing
 
-What Switch gave me, concretely: a shared room both agents and I could see, addressable agents with their own identities and directories, a way to interject at any moment, and an audit trail. What it did not give me: orchestration. I built that, and I built it as manual on purpose, because the thing I wanted was not a pipeline of agents but a disciplined argument that a person gets to settle.
+What Switch gave me, concretely: a shared room the human and both agents could see, addressable agents with their own identities and directories, a way to interject at any moment, and an audit trail. What it did not give me: orchestration. The stage control and rulings live in my own CLI, and I kept the human steps manual on purpose, because the thing I wanted was not a pipeline of agents but a disciplined argument that a person gets to settle. The one piece of automation I wanted, a room-side Clerk agent, I did not build.
 
 If you want to try it, the repo is at [github.com/Krrish-agrawal/Investor-Council](https://github.com/Krrish-agrawal/Investor-Council). If you build something similar, I'd love to hear whether you can reach your Gateway's API Keys page on a local server and register an external agent. That's the piece that would turn my manual council into one that runs from the room.
 
